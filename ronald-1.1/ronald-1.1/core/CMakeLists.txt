@@ -4,6 +4,8 @@ add_library(hexcore SHARED
     src/HexDocument.h
     src/Logger.cpp
     src/Logger.h
+    src/Wiper.cpp
+    src/Wiper.h
     include/hexcore/HexEditorCore.h
 
     # The GUI lives INSIDE this DLL: HexEditorCore.dll is the whole
@@ -38,7 +40,7 @@ if (MINGW)
                         # "dllname,RunEditor" syntax finds the export
 endif()
 
-target_link_libraries(hexcore PRIVATE kernel32 user32 gdi32 comctl32 comdlg32)
+target_link_libraries(hexcore PRIVATE kernel32 user32 gdi32 comctl32 comdlg32 shell32 ole32)
 
 set_target_properties(hexcore PROPERTIES
     OUTPUT_NAME "HexEditorCore"

@@ -119,6 +119,7 @@ core/                               Everything ships in HexEditorCore.dll
   src/HexDocument.h/.cpp            Editing engine (Win32 file I/O, undo/redo, safe save, search)
   src/HexEditorCore.cpp             C ABI wrapper + handle validation
   src/Logger.h/.cpp                 Error-only file logger
+  src/Wiper.h/.cpp                  Secure file/temp-file/free-space wipe (Tools menu)
   src/gui/GuiEntry.cpp              RunEditor - the rundll32 entry point
   src/gui/MainWindow.h/.cpp         Toolbar, tabs, menu, status bar, multi-document file operations
   src/gui/HexGridControl.h/.cpp     Owner-drawn hex/ASCII grid view (range selection, copy/paste)
@@ -242,6 +243,17 @@ build\bin\hexcore_manual_test.exe
    after one confirmation listing every file that will be overwritten.
 8. Closing a tab or the whole window with unsaved changes prompts you to
    save first, one file at a time.
+9. **Herramientas (Tools) menu:**
+   - **Limpiar TMPs del editor** securely wipes (multi-pass overwrite,
+     then delete) any leftover `hxe*.TMP` files that a safe save may
+     have left behind next to the active file (or the current directory
+     if no file is open).
+   - **Limpiar espacio libre (Wipe)...** lets you pick a drive or folder;
+     it then fills all of that volume's free space with zeros (so
+     already-deleted files there become unrecoverable) and removes the
+     temporary fill file afterward. Both actions ask for confirmation
+     first, are irreversible, and can take a while on a large or mostly-
+     empty drive.
 
 The status bar always shows the active tab's full path, its size, the
 cursor's current offset, and whether it has unsaved changes; the tab

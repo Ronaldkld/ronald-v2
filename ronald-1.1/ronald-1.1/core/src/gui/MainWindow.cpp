@@ -1,8 +1,9 @@
 #include "MainWindow.h"
 #include "resource.h"
-#include "Wiper.h"
+#include "../Wiper.h"
 
 #include <windowsx.h>
+#include <shlobj.h>
 #include <algorithm>
 #include <cstdio>
 
@@ -174,6 +175,8 @@ void MainWindow::OnCommand(int id) {
         case IDM_EDIT_FIND: CmdFind(); break;
         case IDM_FILE_NEXTTAB: CmdNextTab(); break;
         case IDM_FILE_PREVTAB: CmdPrevTab(); break;
+        case IDM_TOOLS_WIPE_EDITOR_TEMPS: CmdWipeEditorTemps(); break;
+        case IDM_TOOLS_WIPE_FREE_SPACE: CmdWipeFreeSpace(); break;
         case IDM_HELP_ABOUT: CmdAbout(); break;
         default: break;
     }
@@ -577,6 +580,72 @@ void MainWindow::CmdAbout() {
         L"Files are treated strictly as binary data and are never executed. "
         L"Changes are only written to disk when you choose Save or Save As.",
         L"About Hex Editor", MB_OK | MB_ICONINFORMATION);
+}
+
+void MainWindow::CmdWipeEditorTemps() {
+    std::wstring dir;
+    if (ActiveDoc()) {
+        std::wstring path = ActivePath();
+        size_t slash = path.find_last_of(L"\\/");
+        dir = (slash == std::wstring::npos) ? L"." : path.substr(0, slash);
+    } else {
+        wchar_t cwd[MAX_PATH] = {0};
+        GetCurrentDirectoryW(MAX_PATH, cwd);
+        dir = cwd;
+    }
+
+    std::wstring msg = L"This permanently overwrites and deletes any leftover "
+                        L"hxe*.TMP safe-save temp files in:\n\n" + dir +
+                        L"\n\nThis cannot be undone. Continue?";
+    int r = MessageBoxW(m_hwnd, msg.c_str(), L"Wipe Editor Temp Files", MB_YESNO | MB_ICONWARNING);
+    if (r != IDYES) return;
+
+    int count = hexcore::Wiper::WipeEditorTemps(dir);
+    wchar_t buf[256];
+    swprintf(buf, 256, L"Wiped and deleted %d temp file(s).", count);
+    MessageBoxW(m_hwnd, buf, L"Wipe Editor Temp Files", MB_OK | MB_ICONINFORMATION);
+}
+
+void MainWindow::CmdWipeFreeSpace() {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    wchar_t picked[MAX_PATH] = {0};
+    BROWSEINFOW bi{};
+    bi.hwndOwner = m_hwnd;
+    bi.lpszTitle = L"Select a drive or folder whose free space should be wiped";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+    bool haveFolder = pidl && SHGetPathFromIDListW(pidl, picked);
+    if (pidl) CoTaskMemFree(pidl);
+    CoUninitialize();
+    if (!haveFolder) return;
+
+    wchar_t volumeRoot[MAX_PATH] = {0};
+    if (!GetVolumePathNameW(picked, volumeRoot, MAX_PATH)) {
+        wcsncpy_s(volumeRoot, picked, MAX_PATH - 1);
+    }
+
+    std::wstring msg = L"This fills ALL free space on:\n\n" + std::wstring(volumeRoot) +
+                        L"\n\nwith zeros so deleted files there become unrecoverable, then "
+                        L"removes the temporary fill file. The drive will report as full "
+                        L"while this runs, and it can take a long time on a large drive.\n\n"
+                        L"Continue?";
+    int r = MessageBoxW(m_hwnd, msg.c_str(), L"Wipe Free Space", MB_YESNO | MB_ICONWARNING);
+    if (r != IDYES) return;
+
+    HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    int64_t written = hexcore::Wiper::WipeFreeSpace(volumeRoot, m_hwnd);
+    SetCursor(oldCursor);
+
+    wchar_t buf[256];
+    if (written < 0) {
+        swprintf(buf, 256, L"Could not wipe free space on %s.", volumeRoot);
+        MessageBoxW(m_hwnd, buf, L"Wipe Free Space", MB_OK | MB_ICONERROR);
+    } else {
+        swprintf(buf, 256, L"Wiped %.1f MB of free space on %s.",
+                 written / (1024.0 * 1024.0), volumeRoot);
+        MessageBoxW(m_hwnd, buf, L"Wipe Free Space", MB_OK | MB_ICONINFORMATION);
+    }
 }
 
 bool MainWindow::OnClose() {
