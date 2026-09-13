@@ -30,7 +30,7 @@ BEGIN
     END
     POPUP "&Herramientas"
     BEGIN
-        MENUITEM "Limpiar TMPs huérfanos...",        IDM_TOOLS_WIPE_EDITOR_TEMPS
+        MENUITEM "Limpiar rastros de archivos borrados...", IDM_TOOLS_WIPE_EDITOR_TEMPS
         MENUITEM SEPARATOR
         MENUITEM "Limpiar espacio libre (Wipe)...",  IDM_TOOLS_WIPE_FREE_SPACE
     END

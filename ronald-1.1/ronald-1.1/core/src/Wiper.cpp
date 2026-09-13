@@ -17,6 +17,8 @@ namespace hexcore {
 uint64_t Wiper::s_rng = 0;
 std::atomic<bool>    Wiper::s_cancelRequested{false};
 std::atomic<int64_t> Wiper::s_bytesWritten{0};
+std::atomic<int>     Wiper::s_tempsFilesWiped{0};
+std::atomic<int>     Wiper::s_tempsFoldersDone{0};
 
 void Wiper::FillRandom(uint8_t* buf, size_t len) {
     if (s_rng == 0) {
@@ -126,6 +128,8 @@ bool Wiper::IsOrphanTempName(const std::wstring& name) {
 }
 
 int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
+    if (s_cancelRequested.load()) return 0;
+
     std::wstring base = dir;
     if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base += L'\\';
 
@@ -135,6 +139,8 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
 
     int count = 0;
     do {
+        if (s_cancelRequested.load()) break;
+
         std::wstring name = wfd.cFileName;
         if (name == L"." || name == L"..") continue;
         std::wstring full = base + name;
@@ -146,18 +152,69 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
                 count += WipeEditorTempsRecursive(full, passes);
             }
         } else if (IsOrphanTempName(name)) {
-            if (WipeFile(full, passes)) ++count;
+            if (WipeFile(full, passes)) {
+                ++count;
+                s_tempsFilesWiped = s_tempsFilesWiped.load() + 1;
+            }
         }
     } while (FindNextFileW(hFind, &wfd));
 
     FindClose(hFind);
+
+    // Regardless of what (if anything) this folder still had lying
+    // around, recycle its own freed directory-entry slots: those hold
+    // the stale name/size/timestamp record for EVERY file ever deleted
+    // from it - a PDF, an EXE, anything - which is what a tool like FTK
+    // Imager actually reads, and wiping free space never touches it.
+    if (!s_cancelRequested.load()) {
+        RecycleDirectorySlots(dir);
+    }
+    s_tempsFoldersDone = s_tempsFoldersDone.load() + 1;
+
     return count;
+}
+
+int Wiper::RecycleDirectorySlots(const std::wstring& dir, int maxCycles, DWORD maxDurationMs) {
+    std::wstring base = dir;
+    if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base += L'\\';
+
+    uint32_t seed = static_cast<uint32_t>(GetTickCount64()) ^
+                    static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&dir));
+    DWORD startTick = GetTickCount();
+    int done = 0;
+
+    for (int i = 0; i < maxCycles; ++i) {
+        if (s_cancelRequested.load()) break;
+        if (GetTickCount() - startTick >= maxDurationMs) break;
+
+        // A ~20-character throwaway name: long enough to need the same
+        // kind of long-file-name directory slots a typical real file
+        // name would have used, so recycling it overwrites a comparable
+        // number of the folder's freed slots. Guaranteed not to collide
+        // with anything real.
+        wchar_t name[32];
+        swprintf(name, 32, L"~hxeslot%08x.tmp", seed + static_cast<uint32_t>(i));
+        std::wstring path = base + name;
+
+        HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) continue; // name collision or transient error - just move on
+        CloseHandle(h);
+        if (DeleteFileW(path.c_str())) ++done;
+    }
+    return done;
 }
 
 int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
     if (dir.empty()) return 0;
+    s_cancelRequested = false;
+    s_tempsFilesWiped = 0;
+    s_tempsFoldersDone = 0;
     return WipeEditorTempsRecursive(dir, passes);
 }
+
+int Wiper::GetTempsFilesWiped() { return s_tempsFilesWiped.load(); }
+int Wiper::GetTempsFoldersDone() { return s_tempsFoldersDone.load(); }
 
 // ---------------------------------------------------------------------------
 // WipeFreeSpace

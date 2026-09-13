@@ -12,12 +12,19 @@ namespace hexcore {
 //                 random) passes, then deletes it.  After this, forensic
 //                 tools that scan unallocated clusters find only garbage.
 //
-// WipeEditorTemps — recursively scans a chosen folder/drive for orphaned
-//                   safe-save temp files — this editor's own hxe*.TMP
-//                   files, and the <name>~RFxxxxxxxx.TMP backup files the
-//                   Win32 ReplaceFile API can leave behind on FAT/FAT32/
-//                   exFAT volumes (which lack NTFS's atomic replace
-//                   support) — and wipes them all.
+// WipeEditorTemps — recursively walks a chosen folder/drive. In every
+//                   folder it visits it (1) wipes any still-present
+//                   orphaned safe-save temp files - this editor's own
+//                   hxe*.TMP files, and the <name>~RFxxxxxxxx.TMP backup
+//                   files the Win32 ReplaceFile API can leave behind on
+//                   FAT/FAT32/exFAT volumes - and (2) recycles that
+//                   folder's own freed directory-entry slots (see
+//                   RecycleDirectorySlots below). Step 2 is what actually
+//                   clears the listing a tool like FTK Imager shows for
+//                   ANY previously deleted file in that folder - a PDF,
+//                   an EXE, anything - not just temp files: wiping free
+//                   space only ever overwrites file *content*, never the
+//                   parent folder's own stale entry for a deleted file.
 //
 // WipeFreeSpace — fills free clusters on the volume that contains
 //                 `driveRoot` with zeros (leaving a small safety margin),
@@ -32,10 +39,29 @@ public:
     // Wipe + delete a single file.  passes >= 1.  Returns true on success.
     static bool WipeFile(const std::wstring& path, int passes = 3);
 
-    // Recursively scan `dir` and its subfolders for orphaned safe-save
-    // temp files (see class comment) and wipe+delete each one. Returns
-    // the number of files successfully wiped.
+    // Recursively scan `dir` and its subfolders: wipe+delete orphaned
+    // safe-save temp files, and recycle every visited folder's freed
+    // directory-entry slots (see class comment). Cancellable via
+    // RequestCancel(); poll GetTempsFilesWiped()/GetTempsFoldersDone()
+    // for progress. Returns the number of temp files wiped.
     static int WipeEditorTemps(const std::wstring& dir, int passes = 3);
+
+    // In `dir`, repeatedly creates and immediately deletes a throwaway
+    // file (up to maxCycles times, or until maxDurationMs elapses,
+    // whichever comes first) so the filesystem driver reuses - and so
+    // overwrites - that folder's own freed directory-entry slots. This
+    // is a best-effort technique: it relies on FAT's driver reusing
+    // freed slots in the order it scans them (well documented behavior
+    // of Windows' FAT driver, but not something this project can verify
+    // outside a real Windows FAT32 volume), and it cannot know how many
+    // stale slots actually remain, only spend a bounded budget trying.
+    // Never touches any real file - only throwaway names it creates
+    // itself. Returns the number of create+delete cycles completed.
+    static int RecycleDirectorySlots(const std::wstring& dir, int maxCycles = 150,
+                                      DWORD maxDurationMs = 800);
+
+    static int GetTempsFilesWiped();
+    static int GetTempsFoldersDone();
 
     // Fill the free space on the volume that contains `driveRoot` with
     // zeros (one large fill file, written in 1 MB chunks), flush, then
@@ -74,6 +100,8 @@ private:
 
     static std::atomic<bool>    s_cancelRequested;
     static std::atomic<int64_t> s_bytesWritten;
+    static std::atomic<int>     s_tempsFilesWiped;
+    static std::atomic<int>     s_tempsFoldersDone;
 };
 
 } // namespace hexcore

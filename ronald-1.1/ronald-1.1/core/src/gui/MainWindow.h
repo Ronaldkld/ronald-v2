@@ -99,13 +99,16 @@ private:
     void CmdWipeEditorTemps();
     void CmdWipeFreeSpace();
 
-    // Tools > Wipe free space runs Wiper::WipeFreeSpace on a worker
-    // thread (it can take a long time) with a small modeless progress
-    // window that polls Wiper::GetBytesWrittenSoFar() and can cancel it.
+    // Both Tools > Wipe commands run on a worker thread (they can take
+    // a while) with a small modeless progress window that polls Wiper's
+    // counters and can cancel the operation.
+    enum class WipeKind { None, FreeSpace, Temps };
+
     static LRESULT CALLBACK WipeProgressWndProc(HWND, UINT, WPARAM, LPARAM);
-    void CreateWipeProgressWindow(const std::wstring& volumeRoot);
+    void CreateWipeProgressWindow(const std::wstring& initialLabel);
     void OnWipeProgressTick();
     void OnWipeFreeSpaceDone(int64_t written);
+    void OnWipeTempsDone(int filesWiped);
 
     HINSTANCE m_hInst = nullptr;
     HWND m_hwnd = nullptr;
@@ -123,4 +126,5 @@ private:
     HWND m_hWipeProgressLabel = nullptr;
     std::thread m_wipeThread;
     std::wstring m_wipeVolumeRoot;
+    WipeKind m_activeWipeKind = WipeKind::None;
 };

@@ -245,28 +245,40 @@ build\bin\hexcore_manual_test.exe
    save first, one file at a time.
 9. **Herramientas (Tools) menu:** both actions let you pick any drive or
    folder (not just the currently open file's own folder — an external
-   FAT32 drive works fine), ask for confirmation first, and are
-   irreversible.
-   - **Limpiar TMPs huérfanos...** recursively scans the folder/drive you
-     pick and securely wipes (multi-pass overwrite, then delete) any
-     leftover safe-save temp files: this editor's own `hxe*.TMP` files,
-     and the `<name>~RFxxxxxxxx.TMP` backup files Windows' `ReplaceFile`
-     API can leave behind on FAT/FAT32/exFAT drives (these lack NTFS's
-     atomic replace support) — the exact files a tool like FTK Imager
-     shows as still-recoverable deleted entries. As of this version,
-     Save also skips `ReplaceFile` on non-NTFS volumes so these no
-     longer get created there in the first place.
+   FAT32 drive works fine), run in the background with a cancellable
+   progress window so they never block the editor, ask for confirmation
+   first, and are irreversible.
+   - **Limpiar rastros de archivos borrados...** is the fast, primary
+     tool for what a forensic viewer like FTK Imager shows as "still
+     recoverable" deleted entries — a PDF, an EXE, a temp file, anything.
+     It recursively walks the folder/drive you pick, and in every folder:
+     (a) securely wipes (multi-pass overwrite, then delete) any leftover
+     safe-save temp files still actually present — this editor's own
+     `hxe*.TMP`, and the `<name>~RFxxxxxxxx.TMP` backups Windows'
+     `ReplaceFile` can leave on FAT/FAT32/exFAT drives (which lack NTFS's
+     atomic replace support; Save also now skips `ReplaceFile` on
+     non-NTFS volumes so these stop being created there at all); and
+     (b) recycles that folder's own freed directory-entry slots by
+     creating and deleting a batch of throwaway files there, so the
+     filesystem driver overwrites the stale name/size/timestamp record
+     of every file ever deleted from that folder. Step (b) is what
+     actually clears the on-screen listing — wiping free space alone
+     only ever overwrites file *content*, never a folder's own entry for
+     a file that used to be in it — and it only takes seconds per folder,
+     not minutes. Note: step (b) relies on how Windows' FAT driver reuses
+     freed directory slots (well-documented community behavior, but not
+     independently verifiable from this project's Linux-only build/test
+     environment) — check the result in your forensic tool of choice.
    - **Limpiar espacio libre (Wipe)...** fills the free space of the
      drive/folder you pick with zeros (leaving a small ~32 MB safety
      margin so the volume never hits 0 bytes free) so already-deleted
-     files there become unrecoverable, then removes the temporary fill
-     file(s). It runs in the background with a progress window you can
-     cancel at any time, so it never blocks or hangs the editor. Since a
-     single file can't hold a whole large volume's free space on
-     FAT-family filesystems (FAT32 caps any one file just under 4 GiB),
-     it writes a series of fill files instead so the whole drive actually
-     gets covered rather than silently stopping after the first ~3 GiB -
-     and it can still take a while on a large drive.
+     files' *content* becomes unrecoverable, then removes the temporary
+     fill file(s) — a series of them, since a single file can't hold a
+     whole large volume's free space on FAT-family filesystems (FAT32
+     caps any one file just under 4 GiB). This is slower (writes the
+     entire free space) and doesn't by itself clear the listing above -
+     use it as a deeper, complementary pass after the tool above, not
+     instead of it.
 
 The status bar always shows the active tab's full path, its size, the
 cursor's current offset, and whether it has unsaved changes; the tab
