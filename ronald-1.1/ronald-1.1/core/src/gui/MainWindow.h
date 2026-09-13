@@ -15,6 +15,7 @@
 #include <commctrl.h>
 #include <hexcore/HexEditorCore.h>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "HexGridControl.h"
@@ -98,6 +99,14 @@ private:
     void CmdWipeEditorTemps();
     void CmdWipeFreeSpace();
 
+    // Tools > Wipe free space runs Wiper::WipeFreeSpace on a worker
+    // thread (it can take a long time) with a small modeless progress
+    // window that polls Wiper::GetBytesWrittenSoFar() and can cancel it.
+    static LRESULT CALLBACK WipeProgressWndProc(HWND, UINT, WPARAM, LPARAM);
+    void CreateWipeProgressWindow(const std::wstring& volumeRoot);
+    void OnWipeProgressTick();
+    void OnWipeFreeSpaceDone(int64_t written);
+
     HINSTANCE m_hInst = nullptr;
     HWND m_hwnd = nullptr;
     HWND m_hToolbar = nullptr;
@@ -109,4 +118,9 @@ private:
 
     std::vector<OpenDocument> m_docs;
     int m_activeIndex = -1;
+
+    HWND m_hWipeProgress = nullptr;
+    HWND m_hWipeProgressLabel = nullptr;
+    std::thread m_wipeThread;
+    std::wstring m_wipeVolumeRoot;
 };

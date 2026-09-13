@@ -243,17 +243,26 @@ build\bin\hexcore_manual_test.exe
    after one confirmation listing every file that will be overwritten.
 8. Closing a tab or the whole window with unsaved changes prompts you to
    save first, one file at a time.
-9. **Herramientas (Tools) menu:**
-   - **Limpiar TMPs del editor** securely wipes (multi-pass overwrite,
-     then delete) any leftover `hxe*.TMP` files that a safe save may
-     have left behind next to the active file (or the current directory
-     if no file is open).
-   - **Limpiar espacio libre (Wipe)...** lets you pick a drive or folder;
-     it then fills all of that volume's free space with zeros (so
-     already-deleted files there become unrecoverable) and removes the
-     temporary fill file afterward. Both actions ask for confirmation
-     first, are irreversible, and can take a while on a large or mostly-
-     empty drive.
+9. **Herramientas (Tools) menu:** both actions let you pick any drive or
+   folder (not just the currently open file's own folder — an external
+   FAT32 drive works fine), ask for confirmation first, and are
+   irreversible.
+   - **Limpiar TMPs huérfanos...** recursively scans the folder/drive you
+     pick and securely wipes (multi-pass overwrite, then delete) any
+     leftover safe-save temp files: this editor's own `hxe*.TMP` files,
+     and the `<name>~RFxxxxxxxx.TMP` backup files Windows' `ReplaceFile`
+     API can leave behind on FAT/FAT32/exFAT drives (these lack NTFS's
+     atomic replace support) — the exact files a tool like FTK Imager
+     shows as still-recoverable deleted entries. As of this version,
+     Save also skips `ReplaceFile` on non-NTFS volumes so these no
+     longer get created there in the first place.
+   - **Limpiar espacio libre (Wipe)...** fills the free space of the
+     drive/folder you pick with zeros (leaving a small safety margin so
+     the volume never hits 0 bytes free) so already-deleted files there
+     become unrecoverable, then removes the temporary fill file. It runs
+     in the background with a progress window you can cancel at any
+     time, so it never blocks or hangs the editor - and it can still
+     take a while on a large drive.
 
 The status bar always shows the active tab's full path, its size, the
 cursor's current offset, and whether it has unsaved changes; the tab

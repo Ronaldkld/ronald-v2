@@ -44,6 +44,20 @@ bool BytesEqual(const uint8_t* a, const uint8_t* b, size_t n, bool caseInsensiti
     return true;
 }
 
+// ReplaceFileW relies on NTFS's atomic file-replace support. On FAT/
+// FAT32/exFAT volumes (which lack it), Windows falls back to an internal
+// copy-based emulation that can leave an orphaned "<name>~RFxxxxxxxx.TMP"
+// backup file behind next to the target. MoveFileExW's plain replace
+// doesn't have this failure mode, so on a non-NTFS volume we use that
+// directly instead of trying ReplaceFileW first.
+bool IsNtfsVolume(const std::wstring& path) {
+    wchar_t root[MAX_PATH] = {0};
+    if (!GetVolumePathNameW(path.c_str(), root, MAX_PATH)) return true; // unknown: assume NTFS
+    wchar_t fsName[32] = {0};
+    if (!GetVolumeInformationW(root, nullptr, 0, nullptr, nullptr, nullptr, fsName, 32)) return true;
+    return _wcsicmp(fsName, L"NTFS") == 0;
+}
+
 } // namespace
 
 HexDocument::HexDocument() = default;
@@ -366,8 +380,14 @@ Status HexDocument::DoSaveTo(const std::wstring& targetPath, bool targetIsCurren
     DWORD replaceErr = ERROR_SUCCESS;
 
     if (destExists) {
-        replaced = ReplaceFileW(targetPath.c_str(), tempPath.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr);
-        replaceErr = GetLastError();
+        // ReplaceFileW is preferred on NTFS (atomic, and what the safe-
+        // save design relies on), but skipped entirely on FAT/FAT32/
+        // exFAT: there it can silently leave a "~RFxxxxxxxx.TMP" backup
+        // orphan behind instead of cleaning up (see IsNtfsVolume above).
+        if (IsNtfsVolume(targetPath)) {
+            replaced = ReplaceFileW(targetPath.c_str(), tempPath.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr);
+            replaceErr = GetLastError();
+        }
         if (!replaced) {
             replaced = MoveFileExW(tempPath.c_str(), targetPath.c_str(),
                                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);

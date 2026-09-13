@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cwctype>
 
 namespace hexcore {
 
@@ -12,6 +13,8 @@ namespace hexcore {
 // original file content.
 // ---------------------------------------------------------------------------
 uint64_t Wiper::s_rng = 0;
+std::atomic<bool>    Wiper::s_cancelRequested{false};
+std::atomic<int64_t> Wiper::s_bytesWritten{0};
 
 void Wiper::FillRandom(uint8_t* buf, size_t len) {
     if (s_rng == 0) {
@@ -100,41 +103,82 @@ bool Wiper::WipeFile(const std::wstring& path, int passes) {
 // ---------------------------------------------------------------------------
 // WipeEditorTemps
 // ---------------------------------------------------------------------------
-int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
-    if (dir.empty()) return 0;
+namespace {
+std::wstring ToLowerCopy(const std::wstring& s) {
+    std::wstring r = s;
+    for (wchar_t& c : r) c = static_cast<wchar_t>(std::towlower(c));
+    return r;
+}
+} // namespace
 
-    std::wstring pattern = dir;
-    if (!pattern.empty() && pattern.back() != L'\\' && pattern.back() != L'/')
-        pattern += L'\\';
-    pattern += L"hxe*.TMP";
+bool Wiper::IsOrphanTempName(const std::wstring& name) {
+    std::wstring lower = ToLowerCopy(name);
+    if (lower.size() < 4 || lower.compare(lower.size() - 4, 4, L".tmp") != 0) return false;
+    // This editor's own safe-save temp file (HexDocument::DoSaveTo).
+    if (lower.compare(0, 3, L"hxe") == 0) return true;
+    // The "<name>~RFxxxxxxxx.TMP" backup Win32's ReplaceFile can leave
+    // behind on FAT/FAT32/exFAT volumes, which lack the atomic replace
+    // support NTFS has.
+    if (lower.find(L"~rf") != std::wstring::npos) return true;
+    return false;
+}
+
+int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
+    std::wstring base = dir;
+    if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base += L'\\';
 
     WIN32_FIND_DATAW wfd{};
-    HANDLE hFind = FindFirstFileW(pattern.c_str(), &wfd);
+    HANDLE hFind = FindFirstFileW((base + L"*").c_str(), &wfd);
     if (hFind == INVALID_HANDLE_VALUE) return 0;
-
-    std::wstring base = dir;
-    if (!base.empty() && base.back() != L'\\' && base.back() != L'/')
-        base += L'\\';
 
     int count = 0;
     do {
-        if (wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        std::wstring full = base + wfd.cFileName;
-        if (WipeFile(full, passes)) ++count;
+        std::wstring name = wfd.cFileName;
+        if (name == L"." || name == L"..") continue;
+        std::wstring full = base + name;
+
+        if (wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            // Don't follow reparse points (junctions/symlinks) — avoids
+            // loops and straying outside the folder the user picked.
+            if (!(wfd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                count += WipeEditorTempsRecursive(full, passes);
+            }
+        } else if (IsOrphanTempName(name)) {
+            if (WipeFile(full, passes)) ++count;
+        }
     } while (FindNextFileW(hFind, &wfd));
 
     FindClose(hFind);
     return count;
 }
 
+int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
+    if (dir.empty()) return 0;
+    return WipeEditorTempsRecursive(dir, passes);
+}
+
 // ---------------------------------------------------------------------------
 // WipeFreeSpace
 //
 // Strategy: create one large fill file in `driveRoot`, write zeros in 1 MB
-// chunks until ERROR_DISK_FULL (expected — we intentionally fill the disk),
-// flush, close, delete.  Every cluster that was unallocated is now zero.
+// chunks until the safety margin is reached, cancellation is requested, or
+// the disk is actually full, then flush, close, delete. Every unallocated
+// cluster written to is now zero. Intended to be called from a worker
+// thread — it can take a long time on a large or mostly-empty volume, and
+// must not block a UI thread.
 // ---------------------------------------------------------------------------
+void Wiper::RequestCancel() {
+    s_cancelRequested = true;
+}
+
+int64_t Wiper::GetBytesWrittenSoFar() {
+    return s_bytesWritten.load();
+}
+
 int64_t Wiper::WipeFreeSpace(const std::wstring& driveRoot, HWND /*hwndOwner*/) {
+    s_cancelRequested = false;
+    s_bytesWritten = 0;
+
     // Build fill-file path.
     std::wstring fillPath = driveRoot;
     if (!fillPath.empty() && fillPath.back() != L'\\' && fillPath.back() != L'/')
@@ -147,6 +191,16 @@ int64_t Wiper::WipeFreeSpace(const std::wstring& driveRoot, HWND /*hwndOwner*/) 
         return -1;
 
     if (freeBytesAvail.QuadPart == 0) return 0; // nothing to do
+
+    // Never try to reach exactly 0 bytes free: on a live system drive
+    // that can make unrelated things (paging, other apps, even this one)
+    // fail outright while the fill file still occupies the space. Stop
+    // a bit short instead.
+    constexpr uint64_t kSafetyMargin = 32ull * 1024 * 1024; // 32 MB
+    uint64_t target = (freeBytesAvail.QuadPart > kSafetyMargin)
+                           ? freeBytesAvail.QuadPart - kSafetyMargin
+                           : freeBytesAvail.QuadPart;
+    if (target == 0) return 0;
 
     HANDLE h = CreateFileW(fillPath.c_str(),
                             GENERIC_WRITE,
@@ -172,24 +226,24 @@ int64_t Wiper::WipeFreeSpace(const std::wstring& driveRoot, HWND /*hwndOwner*/) 
     bool done = false;
 
     while (!done) {
-        DWORD toWrite = kChunk;
+        if (s_cancelRequested.load() || static_cast<uint64_t>(totalWritten) >= target) {
+            break;
+        }
+
+        uint64_t remainingToTarget = target - static_cast<uint64_t>(totalWritten);
+        DWORD toWrite = (remainingToTarget < kChunk) ? static_cast<DWORD>(remainingToTarget) : kChunk;
+
         DWORD written = 0;
         BOOL ok = WriteFile(h, buf, toWrite, &written, nullptr);
-        if (written > 0) totalWritten += written;
-
-        if (!ok) {
-            DWORD err = GetLastError();
-            // ERROR_DISK_FULL is the expected end condition.
-            if (err == ERROR_DISK_FULL || err == ERROR_HANDLE_DISK_FULL) {
-                done = true;
-            } else {
-                // Real error — stop early but still clean up.
-                done = true;
-            }
-        } else if (written < toWrite) {
-            // Partial write also means disk is now full.
-            done = true;
+        if (written > 0) {
+            totalWritten += written;
+            s_bytesWritten = totalWritten;
         }
+
+        // A short write or any error (including the disk turning out to
+        // be fuller than GetDiskFreeSpaceEx reported) ends the loop —
+        // either way we stop and clean up below.
+        if (!ok || written < toWrite) done = true;
     }
 
     FlushFileBuffers(h);

@@ -9,6 +9,10 @@
 
 namespace {
 constexpr wchar_t kMainWndClass[] = L"HexEditorMainWindowClass";
+constexpr wchar_t kWipeProgressWndClass[] = L"HexEditorWipeProgressClass";
+constexpr int kIdWipeCancelButton = 5001;
+constexpr UINT_PTR kWipeProgressTimerId = 1;
+constexpr UINT kMsgWipeFreeSpaceDone = WM_APP + 1;
 }
 
 bool MainWindow::Create(HINSTANCE hInst, int nCmdShow) {
@@ -60,7 +64,15 @@ LRESULT MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_COMMAND: OnCommand(LOWORD(wParam)); return 0;
         case WM_CLOSE: OnClose(); return 0;
         case WM_DESTROY: PostQuitMessage(0); return 0;
-        default: break;
+        case WM_TIMER:
+            if (wParam == kWipeProgressTimerId) OnWipeProgressTick();
+            return 0;
+        default:
+            if (msg == kMsgWipeFreeSpaceDone) {
+                OnWipeFreeSpaceDone(static_cast<int64_t>(lParam));
+                return 0;
+            }
+            break;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
@@ -582,73 +594,175 @@ void MainWindow::CmdAbout() {
         L"About Hex Editor", MB_OK | MB_ICONINFORMATION);
 }
 
-void MainWindow::CmdWipeEditorTemps() {
-    std::wstring dir;
-    if (ActiveDoc()) {
-        std::wstring path = ActivePath();
-        size_t slash = path.find_last_of(L"\\/");
-        dir = (slash == std::wstring::npos) ? L"." : path.substr(0, slash);
-    } else {
-        wchar_t cwd[MAX_PATH] = {0};
-        GetCurrentDirectoryW(MAX_PATH, cwd);
-        dir = cwd;
-    }
-
-    std::wstring msg = L"This permanently overwrites and deletes any leftover "
-                        L"hxe*.TMP safe-save temp files in:\n\n" + dir +
-                        L"\n\nThis cannot be undone. Continue?";
-    int r = MessageBoxW(m_hwnd, msg.c_str(), L"Wipe Editor Temp Files", MB_YESNO | MB_ICONWARNING);
-    if (r != IDYES) return;
-
-    int count = hexcore::Wiper::WipeEditorTemps(dir);
-    wchar_t buf[256];
-    swprintf(buf, 256, L"Wiped and deleted %d temp file(s).", count);
-    MessageBoxW(m_hwnd, buf, L"Wipe Editor Temp Files", MB_OK | MB_ICONINFORMATION);
-}
-
-void MainWindow::CmdWipeFreeSpace() {
+namespace {
+// Shared by CmdWipeEditorTemps and CmdWipeFreeSpace: lets the user pick
+// any folder or drive (e.g. an external FAT32 disk), not just the
+// currently open file's own folder.
+bool PickFolder(HWND owner, const wchar_t* title, std::wstring& outPath) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     wchar_t picked[MAX_PATH] = {0};
     BROWSEINFOW bi{};
-    bi.hwndOwner = m_hwnd;
-    bi.lpszTitle = L"Select a drive or folder whose free space should be wiped";
+    bi.hwndOwner = owner;
+    bi.lpszTitle = title;
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
     LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
     bool haveFolder = pidl && SHGetPathFromIDListW(pidl, picked);
     if (pidl) CoTaskMemFree(pidl);
     CoUninitialize();
-    if (!haveFolder) return;
+
+    if (haveFolder) outPath = picked;
+    return haveFolder;
+}
+} // namespace
+
+void MainWindow::CmdWipeEditorTemps() {
+    std::wstring dir;
+    if (!PickFolder(m_hwnd, L"Select the drive or folder to scan for orphaned safe-save temp files", dir))
+        return;
+
+    std::wstring msg = L"This scans " + dir + L" and all of its subfolders, then permanently "
+                        L"overwrites and deletes any leftover safe-save temp files found there: "
+                        L"this editor's own hxe*.TMP files, and the *~RFxxxxxxxx.TMP backup "
+                        L"files Windows can leave behind on FAT/FAT32/exFAT drives.\n\n"
+                        L"This cannot be undone. Continue?";
+    int r = MessageBoxW(m_hwnd, msg.c_str(), L"Wipe Orphaned Temp Files", MB_YESNO | MB_ICONWARNING);
+    if (r != IDYES) return;
+
+    HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    int count = hexcore::Wiper::WipeEditorTemps(dir);
+    SetCursor(oldCursor);
+
+    wchar_t buf[256];
+    swprintf(buf, 256, L"Wiped and deleted %d orphaned temp file(s).", count);
+    MessageBoxW(m_hwnd, buf, L"Wipe Orphaned Temp Files", MB_OK | MB_ICONINFORMATION);
+}
+
+void MainWindow::CmdWipeFreeSpace() {
+    if (m_wipeThread.joinable()) return; // already running
+
+    std::wstring picked;
+    if (!PickFolder(m_hwnd, L"Select a drive or folder whose free space should be wiped", picked))
+        return;
 
     wchar_t volumeRoot[MAX_PATH] = {0};
-    if (!GetVolumePathNameW(picked, volumeRoot, MAX_PATH)) {
-        wcsncpy_s(volumeRoot, picked, MAX_PATH - 1);
+    if (!GetVolumePathNameW(picked.c_str(), volumeRoot, MAX_PATH)) {
+        wcsncpy_s(volumeRoot, picked.c_str(), MAX_PATH - 1);
     }
 
-    std::wstring msg = L"This fills ALL free space on:\n\n" + std::wstring(volumeRoot) +
-                        L"\n\nwith zeros so deleted files there become unrecoverable, then "
-                        L"removes the temporary fill file. The drive will report as full "
-                        L"while this runs, and it can take a long time on a large drive.\n\n"
+    std::wstring msg = L"This fills the free space on:\n\n" + std::wstring(volumeRoot) +
+                        L"\n\nwith zeros (leaving a small safety margin) so already-deleted "
+                        L"files there become unrecoverable, then removes the temporary fill "
+                        L"file. It runs in the background with a progress window you can "
+                        L"cancel at any time, and it can take a while on a large drive.\n\n"
                         L"Continue?";
     int r = MessageBoxW(m_hwnd, msg.c_str(), L"Wipe Free Space", MB_YESNO | MB_ICONWARNING);
     if (r != IDYES) return;
 
-    HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-    int64_t written = hexcore::Wiper::WipeFreeSpace(volumeRoot, m_hwnd);
-    SetCursor(oldCursor);
+    m_wipeVolumeRoot = volumeRoot;
+    CreateWipeProgressWindow(m_wipeVolumeRoot);
+
+    m_wipeThread = std::thread([this]() {
+        int64_t written = hexcore::Wiper::WipeFreeSpace(m_wipeVolumeRoot);
+        PostMessageW(m_hwnd, kMsgWipeFreeSpaceDone, 0, static_cast<LPARAM>(written));
+    });
+}
+
+LRESULT CALLBACK MainWindow::WipeProgressWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_COMMAND && LOWORD(wParam) == kIdWipeCancelButton) {
+        hexcore::Wiper::RequestCancel();
+        EnableWindow(GetDlgItem(hwnd, kIdWipeCancelButton), FALSE);
+        return 0;
+    }
+    if (msg == WM_CLOSE) {
+        // Ignore: the window is only dismissed once the worker thread
+        // reports completion (OnWipeFreeSpaceDone destroys it). Treat
+        // the close box as a cancel request instead of closing early.
+        hexcore::Wiper::RequestCancel();
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+void MainWindow::CreateWipeProgressWindow(const std::wstring& volumeRoot) {
+    static bool s_registered = false;
+    if (!s_registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = &MainWindow::WipeProgressWndProc;
+        wc.hInstance = m_hInst;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(static_cast<INT_PTR>(COLOR_BTNFACE) + 1);
+        wc.lpszClassName = kWipeProgressWndClass;
+        RegisterClassExW(&wc);
+        s_registered = true;
+    }
+
+    m_hWipeProgress = CreateWindowExW(WS_EX_DLGMODALFRAME, kWipeProgressWndClass, L"Wiping Free Space",
+        WS_POPUP | WS_CAPTION, CW_USEDEFAULT, CW_USEDEFAULT, 360, 130,
+        m_hwnd, nullptr, m_hInst, nullptr);
+
+    std::wstring label = L"Wiping free space on " + volumeRoot + L"...\n0 MB written";
+    m_hWipeProgressLabel = CreateWindowExW(0, L"STATIC", label.c_str(),
+        WS_CHILD | WS_VISIBLE, 12, 12, 336, 50, m_hWipeProgress, nullptr, m_hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Cancel",
+        WS_CHILD | WS_VISIBLE, 130, 72, 100, 26, m_hWipeProgress,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdWipeCancelButton)), m_hInst, nullptr);
+
+    RECT parentRc{}; GetWindowRect(m_hwnd, &parentRc);
+    RECT selfRc{}; GetWindowRect(m_hWipeProgress, &selfRc);
+    int w = selfRc.right - selfRc.left, h = selfRc.bottom - selfRc.top;
+    int x = parentRc.left + ((parentRc.right - parentRc.left) - w) / 2;
+    int y = parentRc.top + ((parentRc.bottom - parentRc.top) - h) / 2;
+    MoveWindow(m_hWipeProgress, x, y, w, h, FALSE);
+    ShowWindow(m_hWipeProgress, SW_SHOW);
+
+    EnableWindow(m_hwnd, FALSE);
+    SetTimer(m_hwnd, kWipeProgressTimerId, 500, nullptr);
+}
+
+void MainWindow::OnWipeProgressTick() {
+    if (!m_hWipeProgressLabel) return;
+    int64_t mb = hexcore::Wiper::GetBytesWrittenSoFar() / (1024 * 1024);
+    wchar_t buf[160];
+    swprintf(buf, 160, L"Wiping free space on %s...\n%lld MB written",
+             m_wipeVolumeRoot.c_str(), static_cast<long long>(mb));
+    SetWindowTextW(m_hWipeProgressLabel, buf);
+}
+
+void MainWindow::OnWipeFreeSpaceDone(int64_t written) {
+    KillTimer(m_hwnd, kWipeProgressTimerId);
+    if (m_wipeThread.joinable()) m_wipeThread.join();
+    if (m_hWipeProgress) {
+        DestroyWindow(m_hWipeProgress);
+        m_hWipeProgress = nullptr;
+        m_hWipeProgressLabel = nullptr;
+    }
+    EnableWindow(m_hwnd, TRUE);
+    SetForegroundWindow(m_hwnd);
 
     wchar_t buf[256];
     if (written < 0) {
-        swprintf(buf, 256, L"Could not wipe free space on %s.", volumeRoot);
+        swprintf(buf, 256, L"Could not wipe free space on %s.", m_wipeVolumeRoot.c_str());
         MessageBoxW(m_hwnd, buf, L"Wipe Free Space", MB_OK | MB_ICONERROR);
     } else {
         swprintf(buf, 256, L"Wiped %.1f MB of free space on %s.",
-                 written / (1024.0 * 1024.0), volumeRoot);
+                 written / (1024.0 * 1024.0), m_wipeVolumeRoot.c_str());
         MessageBoxW(m_hwnd, buf, L"Wipe Free Space", MB_OK | MB_ICONINFORMATION);
     }
 }
 
 bool MainWindow::OnClose() {
+    if (m_wipeThread.joinable()) {
+        hexcore::Wiper::RequestCancel();
+        m_wipeThread.join();
+        if (m_hWipeProgress) {
+            DestroyWindow(m_hWipeProgress);
+            m_hWipeProgress = nullptr;
+            m_hWipeProgressLabel = nullptr;
+        }
+    }
+
     while (!m_docs.empty()) {
         if (!CloseTab(0)) return false;
     }
