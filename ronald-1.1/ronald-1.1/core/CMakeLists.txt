@@ -6,6 +6,8 @@ add_library(hexcore SHARED
     src/Logger.h
     src/Wiper.cpp
     src/Wiper.h
+    src/FatVolume.cpp
+    src/FatVolume.h
     include/hexcore/HexEditorCore.h
 
     # The GUI lives INSIDE this DLL: HexEditorCore.dll is the whole

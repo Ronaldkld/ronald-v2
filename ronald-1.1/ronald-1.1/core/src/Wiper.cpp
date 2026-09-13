@@ -15,10 +15,19 @@ namespace hexcore {
 // original file content.
 // ---------------------------------------------------------------------------
 uint64_t Wiper::s_rng = 0;
-std::atomic<bool>    Wiper::s_cancelRequested{false};
-std::atomic<int64_t> Wiper::s_bytesWritten{0};
-std::atomic<int>     Wiper::s_tempsFilesWiped{0};
-std::atomic<int>     Wiper::s_tempsFoldersDone{0};
+std::atomic<bool>     Wiper::s_cancelRequested{false};
+std::atomic<int64_t>  Wiper::s_bytesWritten{0};
+std::atomic<int>      Wiper::s_tempsFilesWiped{0};
+std::atomic<int>      Wiper::s_tempsFoldersDone{0};
+std::atomic<int>      Wiper::s_dirEntriesWiped{0};
+std::atomic<uint64_t> Wiper::s_deadlineTick{0};
+Wiper::FatWipeStatus  Wiper::s_fatWipeStatus{Wiper::FatWipeStatus::NotAttempted};
+
+bool Wiper::ShouldStop() {
+    if (s_cancelRequested.load()) return true;
+    uint64_t deadline = s_deadlineTick.load();
+    return deadline != 0 && GetTickCount64() >= deadline;
+}
 
 void Wiper::FillRandom(uint8_t* buf, size_t len) {
     if (s_rng == 0) {
@@ -127,8 +136,33 @@ bool Wiper::IsOrphanTempName(const std::wstring& name) {
     return false;
 }
 
-int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
-    if (s_cancelRequested.load()) return 0;
+namespace {
+// Splits `fullPath` into path components relative to `rootPrefix` (e.g.
+// "D:\root\DocumentosVarios" relative to "D:\" -> {"root",
+// "DocumentosVarios"}), for FatVolume::ResolveDirectoryCluster.
+std::vector<std::wstring> SplitRelativeToRoot(const std::wstring& fullPath,
+                                               const std::wstring& rootPrefix) {
+    std::wstring rel = fullPath;
+    if (rel.size() >= rootPrefix.size() &&
+        _wcsnicmp(rel.c_str(), rootPrefix.c_str(), rootPrefix.size()) == 0) {
+        rel = rel.substr(rootPrefix.size());
+    }
+    std::vector<std::wstring> parts;
+    size_t start = 0;
+    while (start < rel.size()) {
+        size_t slash = rel.find_first_of(L"\\/", start);
+        std::wstring part = (slash == std::wstring::npos) ? rel.substr(start) : rel.substr(start, slash - start);
+        if (!part.empty()) parts.push_back(part);
+        if (slash == std::wstring::npos) break;
+        start = slash + 1;
+    }
+    return parts;
+}
+} // namespace
+
+int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes,
+                                     FatVolume* fatVol, const std::wstring& volumeRootPrefix) {
+    if (ShouldStop()) return 0;
 
     std::wstring base = dir;
     if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base += L'\\';
@@ -139,7 +173,7 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
 
     int count = 0;
     do {
-        if (s_cancelRequested.load()) break;
+        if (ShouldStop()) break;
 
         std::wstring name = wfd.cFileName;
         if (name == L"." || name == L"..") continue;
@@ -149,7 +183,7 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
             // Don't follow reparse points (junctions/symlinks) — avoids
             // loops and straying outside the folder the user picked.
             if (!(wfd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-                count += WipeEditorTempsRecursive(full, passes);
+                count += WipeEditorTempsRecursive(full, passes, fatVol, volumeRootPrefix);
             }
         } else if (IsOrphanTempName(name)) {
             if (WipeFile(full, passes)) {
@@ -161,48 +195,21 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
 
     FindClose(hFind);
 
-    // Regardless of what (if anything) this folder still had lying
-    // around, recycle its own freed directory-entry slots: those hold
-    // the stale name/size/timestamp record for EVERY file ever deleted
-    // from it - a PDF, an EXE, anything - which is what a tool like FTK
-    // Imager actually reads, and wiping free space never touches it.
-    if (!s_cancelRequested.load()) {
-        RecycleDirectorySlots(dir);
+    // If we have raw access to a locked FAT32 volume, also zero out this
+    // folder's own stale directory-entry slots' name/size/date content -
+    // the actual listing a tool like FTK Imager reads, which wiping
+    // free space or deleting files here never touches.
+    if (fatVol && !ShouldStop()) {
+        std::vector<std::wstring> components = SplitRelativeToRoot(dir, volumeRootPrefix);
+        uint32_t cluster = fatVol->ResolveDirectoryCluster(components);
+        if (cluster != 0) {
+            int wiped = fatVol->WipeStaleEntries(cluster);
+            if (wiped > 0) s_dirEntriesWiped = s_dirEntriesWiped.load() + wiped;
+        }
     }
     s_tempsFoldersDone = s_tempsFoldersDone.load() + 1;
 
     return count;
-}
-
-int Wiper::RecycleDirectorySlots(const std::wstring& dir, int maxCycles, DWORD maxDurationMs) {
-    std::wstring base = dir;
-    if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base += L'\\';
-
-    uint32_t seed = static_cast<uint32_t>(GetTickCount64()) ^
-                    static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&dir));
-    DWORD startTick = GetTickCount();
-    int done = 0;
-
-    for (int i = 0; i < maxCycles; ++i) {
-        if (s_cancelRequested.load()) break;
-        if (GetTickCount() - startTick >= maxDurationMs) break;
-
-        // A ~20-character throwaway name: long enough to need the same
-        // kind of long-file-name directory slots a typical real file
-        // name would have used, so recycling it overwrites a comparable
-        // number of the folder's freed slots. Guaranteed not to collide
-        // with anything real.
-        wchar_t name[32];
-        swprintf(name, 32, L"~hxeslot%08x.tmp", seed + static_cast<uint32_t>(i));
-        std::wstring path = base + name;
-
-        HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
-                                CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h == INVALID_HANDLE_VALUE) continue; // name collision or transient error - just move on
-        CloseHandle(h);
-        if (DeleteFileW(path.c_str())) ++done;
-    }
-    return done;
 }
 
 int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
@@ -210,11 +217,62 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
     s_cancelRequested = false;
     s_tempsFilesWiped = 0;
     s_tempsFoldersDone = 0;
-    return WipeEditorTempsRecursive(dir, passes);
+    s_dirEntriesWiped = 0;
+    s_fatWipeStatus = FatWipeStatus::NotAttempted;
+
+    constexpr uint64_t kGlobalBudgetMs = 45000; // hard cap so a folder-heavy drive still finishes fast
+    s_deadlineTick = GetTickCount64() + kGlobalBudgetMs;
+
+    FatVolume fatVol;
+    FatVolume* fatVolPtr = nullptr;
+    std::wstring volumeRootPrefix;
+    bool locked = false;
+
+    wchar_t volRoot[MAX_PATH] = {0};
+    if (GetVolumePathNameW(dir.c_str(), volRoot, MAX_PATH)) {
+        volumeRootPrefix = volRoot;
+        wchar_t fsName[32] = {0};
+        if (GetVolumeInformationW(volRoot, nullptr, 0, nullptr, nullptr, nullptr, fsName, 32) &&
+            _wcsicmp(fsName, L"FAT32") == 0) {
+            std::wstring devicePath = L"\\\\.\\";
+            devicePath += volRoot[0];
+            devicePath += L':';
+
+            if (fatVol.Open(devicePath, true)) {
+                DWORD dummy = 0;
+                locked = DeviceIoControl(fatVol.RawHandle(), FSCTL_LOCK_VOLUME, nullptr, 0,
+                                          nullptr, 0, &dummy, nullptr) != 0;
+                if (locked) {
+                    fatVolPtr = &fatVol;
+                    s_fatWipeStatus = FatWipeStatus::Ran;
+                } else {
+                    s_fatWipeStatus = FatWipeStatus::VolumeInUse;
+                    fatVol.Close();
+                }
+            } else {
+                s_fatWipeStatus = FatWipeStatus::NeedsAdmin;
+            }
+        } else {
+            s_fatWipeStatus = FatWipeStatus::NotFat32;
+        }
+    }
+
+    int result = WipeEditorTempsRecursive(dir, passes, fatVolPtr, volumeRootPrefix);
+
+    if (locked) {
+        DWORD dummy = 0;
+        DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &dummy, nullptr);
+        fatVol.Close();
+    }
+
+    s_deadlineTick = 0;
+    return result;
 }
 
 int Wiper::GetTempsFilesWiped() { return s_tempsFilesWiped.load(); }
 int Wiper::GetTempsFoldersDone() { return s_tempsFoldersDone.load(); }
+int Wiper::GetDirEntriesWiped() { return s_dirEntriesWiped.load(); }
+Wiper::FatWipeStatus Wiper::GetFatWipeStatus() { return s_fatWipeStatus; }
 
 // ---------------------------------------------------------------------------
 // WipeFreeSpace

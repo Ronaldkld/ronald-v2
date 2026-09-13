@@ -120,6 +120,7 @@ core/                               Everything ships in HexEditorCore.dll
   src/HexEditorCore.cpp             C ABI wrapper + handle validation
   src/Logger.h/.cpp                 Error-only file logger
   src/Wiper.h/.cpp                  Secure file/temp-file/free-space wipe (Tools menu)
+  src/FatVolume.h/.cpp              Raw FAT32 directory-entry scan/wipe (used by Wiper on FAT32+admin)
   src/gui/GuiEntry.cpp              RunEditor - the rundll32 entry point
   src/gui/MainWindow.h/.cpp         Toolbar, tabs, menu, status bar, multi-document file operations
   src/gui/HexGridControl.h/.cpp     Owner-drawn hex/ASCII grid view (range selection, copy/paste)
@@ -248,27 +249,39 @@ build\bin\hexcore_manual_test.exe
    FAT32 drive works fine), run in the background with a cancellable
    progress window so they never block the editor, ask for confirmation
    first, and are irreversible.
-   - **Limpiar rastros de archivos borrados...** is the fast, primary
-     tool for what a forensic viewer like FTK Imager shows as "still
-     recoverable" deleted entries — a PDF, an EXE, a temp file, anything.
-     It recursively walks the folder/drive you pick, and in every folder:
+   - **Limpiar rastros de archivos borrados...** is the tool for what a
+     forensic viewer like FTK Imager shows as "still recoverable" deleted
+     entries — a PDF, an EXE, a temp file, anything. It recursively walks
+     the folder/drive you pick (with a hard ~45s time budget so a
+     folder-heavy drive still finishes fast), and in every folder:
      (a) securely wipes (multi-pass overwrite, then delete) any leftover
      safe-save temp files still actually present — this editor's own
      `hxe*.TMP`, and the `<name>~RFxxxxxxxx.TMP` backups Windows'
      `ReplaceFile` can leave on FAT/FAT32/exFAT drives (which lack NTFS's
      atomic replace support; Save also now skips `ReplaceFile` on
      non-NTFS volumes so these stop being created there at all); and
-     (b) recycles that folder's own freed directory-entry slots by
-     creating and deleting a batch of throwaway files there, so the
-     filesystem driver overwrites the stale name/size/timestamp record
-     of every file ever deleted from that folder. Step (b) is what
-     actually clears the on-screen listing — wiping free space alone
-     only ever overwrites file *content*, never a folder's own entry for
-     a file that used to be in it — and it only takes seconds per folder,
-     not minutes. Note: step (b) relies on how Windows' FAT driver reuses
-     freed directory slots (well-documented community behavior, but not
-     independently verifiable from this project's Linux-only build/test
-     environment) — check the result in your forensic tool of choice.
+     (b), **only** when the target is a FAT32 drive *and* the process is
+     running elevated (Administrator) *and* the drive can be locked for
+     exclusive access (nothing else has a file open on it), directly
+     zeros the name/size/date/starting-cluster of every already-deleted
+     directory entry in each folder, at the raw volume level (see
+     `core/src/FatVolume.h`/`.cpp`) — the actual bytes a tool like FTK
+     Imager reads for that listing, which wiping free space or deleting
+     files can never reach. Only bytes 1..31 of a stale entry are zeroed;
+     byte 0 is left as FAT's own 0xE5 "deleted" marker, since zeroing it
+     too would read as FAT32's "end of directory" marker and could hide
+     *live* files stored after it in the same folder from Windows itself
+     — a real bug caught by this project's own test suite (a hand-built,
+     byte-exact synthetic FAT32 image, not a real disk, run under Wine)
+     before it ever touched a real volume. An earlier
+     version of this tool tried to achieve the same result by creating
+     and deleting throwaway files to coax the FAT driver into reusing
+     freed slots on its own; that was confirmed, in real-world testing,
+     not to reliably work at all, and has been replaced by this direct
+     approach. The result message always says exactly which of these
+     conditions (not FAT32 / needs Administrator / drive in use
+     elsewhere / ran, and how many entries) applied — it's never silent
+     about whether anything happened.
    - **Limpiar espacio libre (Wipe)...** fills the free space of the
      drive/folder you pick with zeros (leaving a small ~32 MB safety
      margin so the volume never hits 0 bytes free) so already-deleted

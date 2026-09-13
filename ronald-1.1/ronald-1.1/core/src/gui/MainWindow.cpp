@@ -631,10 +631,15 @@ void MainWindow::CmdWipeEditorTemps() {
     std::wstring msg = L"This scans " + dir + L" and all of its subfolders. In every folder it "
                         L"visits, it permanently wipes any leftover safe-save temp files (this "
                         L"editor's own hxe*.TMP, and the *~RFxxxxxxxx.TMP backups Windows can "
-                        L"leave on FAT/FAT32/exFAT drives), AND recycles that folder's own freed "
-                        L"directory entries - which is what clears the \"still recoverable\" "
-                        L"listing a tool like FTK Imager shows for ANY previously deleted file "
-                        L"there (a PDF, an EXE, anything), not just temp files.\n\n"
+                        L"leave on FAT/FAT32/exFAT drives).\n\n"
+                        L"If the target is a FAT32 drive AND this program is running as "
+                        L"Administrator, it ALSO directly zeros out the name/size/date of every "
+                        L"already-deleted directory entry in each folder - the actual \"still "
+                        L"recoverable\" listing a tool like FTK Imager shows for ANY previously "
+                        L"deleted file (a PDF, an EXE, anything), not just temp files. This needs "
+                        L"the drive to not be in use elsewhere (close other programs/Explorer "
+                        L"windows on it first) and won't run at all without Administrator rights - "
+                        L"the result message will say exactly what happened.\n\n"
                         L"It runs in the background and you can cancel it at any time. This "
                         L"cannot be undone. Continue?";
     int r = MessageBoxW(m_hwnd, msg.c_str(), L"Wipe Deleted-File Traces", MB_YESNO | MB_ICONWARNING);
@@ -784,15 +789,48 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
         m_hWipeProgressLabel = nullptr;
     }
     int foldersDone = hexcore::Wiper::GetTempsFoldersDone();
+    int dirEntriesWiped = hexcore::Wiper::GetDirEntriesWiped();
+    hexcore::Wiper::FatWipeStatus fatStatus = hexcore::Wiper::GetFatWipeStatus();
     m_activeWipeKind = WipeKind::None;
     EnableWindow(m_hwnd, TRUE);
     SetForegroundWindow(m_hwnd);
 
-    wchar_t buf[256];
-    swprintf(buf, 256, L"Done. Wiped %d orphaned temp file(s) and recycled deleted-file "
-                        L"traces across %d folder(s) in %s.",
-             filesWiped, foldersDone, m_wipeVolumeRoot.c_str());
-    MessageBoxW(m_hwnd, buf, L"Wipe Deleted-File Traces", MB_OK | MB_ICONINFORMATION);
+    const wchar_t* fatStatusLine = L"";
+    switch (fatStatus) {
+        case hexcore::Wiper::FatWipeStatus::NotFat32:
+            fatStatusLine = L"\n\nThe target isn't a FAT32 drive, so the directory-entry pass "
+                             L"(what actually clears a forensic tool's listing) did not run - "
+                             L"only the temp-file wipe above applies.";
+            break;
+        case hexcore::Wiper::FatWipeStatus::NeedsAdmin:
+            fatStatusLine = L"\n\nThe directory-entry pass did NOT run: this program needs to be "
+                             L"running as Administrator to write to the raw FAT32 volume. Close "
+                             L"it, right-click HexEditorCore.dll's shortcut (or rundll32) and "
+                             L"choose \"Run as administrator\", then try again.";
+            break;
+        case hexcore::Wiper::FatWipeStatus::VolumeInUse:
+            fatStatusLine = L"\n\nThe directory-entry pass did NOT run: the drive could not be "
+                             L"locked for exclusive access (something else has a file open on "
+                             L"it - close other programs and Explorer windows using that drive, "
+                             L"including any tabs open on it in this editor, then try again).";
+            break;
+        case hexcore::Wiper::FatWipeStatus::Ran: {
+            static wchar_t ranBuf[160];
+            swprintf(ranBuf, 160, L"\n\nAlso zeroed the name/size/date of %d deleted directory "
+                                   L"entry (or entries) directly on the FAT32 volume - the actual "
+                                   L"listing a tool like FTK Imager reads.", dirEntriesWiped);
+            fatStatusLine = ranBuf;
+            break;
+        }
+        case hexcore::Wiper::FatWipeStatus::NotAttempted:
+        default:
+            break;
+    }
+
+    std::wstring msg = L"Wiped " + std::to_wstring(filesWiped) + L" orphaned temp file(s) across " +
+                        std::to_wstring(foldersDone) + L" folder(s) in " + m_wipeVolumeRoot + L"." +
+                        fatStatusLine;
+    MessageBoxW(m_hwnd, msg.c_str(), L"Wipe Deleted-File Traces", MB_OK | MB_ICONINFORMATION);
 }
 
 bool MainWindow::OnClose() {
