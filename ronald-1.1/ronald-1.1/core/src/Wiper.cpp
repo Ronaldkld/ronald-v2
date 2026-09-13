@@ -1,8 +1,10 @@
 #include "Wiper.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <cwctype>
+#include <vector>
 
 namespace hexcore {
 
@@ -160,12 +162,18 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
 // ---------------------------------------------------------------------------
 // WipeFreeSpace
 //
-// Strategy: create one large fill file in `driveRoot`, write zeros in 1 MB
-// chunks until the safety margin is reached, cancellation is requested, or
-// the disk is actually full, then flush, close, delete. Every unallocated
-// cluster written to is now zero. Intended to be called from a worker
-// thread — it can take a long time on a large or mostly-empty volume, and
-// must not block a UI thread.
+// Strategy: create a series of fill files in `driveRoot` and write zeros
+// into them until the safety margin is reached, cancellation is requested,
+// or the disk is actually full, then flush, close and delete them all.
+// Every unallocated cluster written to is now zero. Multiple files are
+// used (rather than one huge one) because a single file is capped well
+// under the volume's free space on FAT-family filesystems — FAT32 refuses
+// any one file past just under 4 GiB, so one giant fill file silently
+// stops there, leaving most of a larger drive's free space (and whatever
+// deleted-file remnants live in it) untouched.
+//
+// Intended to be called from a worker thread — it can take a long time on
+// a large or mostly-empty volume, and must not block a UI thread.
 // ---------------------------------------------------------------------------
 void Wiper::RequestCancel() {
     s_cancelRequested = true;
@@ -179,11 +187,8 @@ int64_t Wiper::WipeFreeSpace(const std::wstring& driveRoot, HWND /*hwndOwner*/) 
     s_cancelRequested = false;
     s_bytesWritten = 0;
 
-    // Build fill-file path.
-    std::wstring fillPath = driveRoot;
-    if (!fillPath.empty() && fillPath.back() != L'\\' && fillPath.back() != L'/')
-        fillPath += L'\\';
-    fillPath += L"~hxewipe_fill.tmp";
+    std::wstring base = driveRoot;
+    if (!base.empty() && base.back() != L'\\' && base.back() != L'/') base += L'\\';
 
     // How much free space is there?
     ULARGE_INTEGER freeBytesAvail{}, totalBytes{}, totalFree{};
@@ -194,63 +199,84 @@ int64_t Wiper::WipeFreeSpace(const std::wstring& driveRoot, HWND /*hwndOwner*/) 
 
     // Never try to reach exactly 0 bytes free: on a live system drive
     // that can make unrelated things (paging, other apps, even this one)
-    // fail outright while the fill file still occupies the space. Stop
-    // a bit short instead.
+    // fail outright while the fill files still occupy the space. Stop a
+    // bit short instead.
     constexpr uint64_t kSafetyMargin = 32ull * 1024 * 1024; // 32 MB
     uint64_t target = (freeBytesAvail.QuadPart > kSafetyMargin)
                            ? freeBytesAvail.QuadPart - kSafetyMargin
                            : freeBytesAvail.QuadPart;
     if (target == 0) return 0;
 
-    HANDLE h = CreateFileW(fillPath.c_str(),
-                            GENERIC_WRITE,
-                            0,
-                            nullptr,
-                            CREATE_ALWAYS,
-                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-                            nullptr);
-    if (h == INVALID_HANDLE_VALUE) return -1;
+    // Comfortably under FAT32's ~4 GiB-1 per-file cap (and FAT16's ~2
+    // GiB one) so a single fill file never hits that ceiling early;
+    // harmless overhead of a few extra file creations on NTFS/exFAT.
+    constexpr uint64_t kPerFileCap = 3ull * 1024 * 1024 * 1024; // 3 GiB
+    // No FILE_FLAG_WRITE_THROUGH here: forcing every 1 MB write straight
+    // to disk (as the previous version did) serializes on physical I/O
+    // and is dramatically slower, especially over USB. A single flush
+    // per fill file is enough to guarantee the zeros actually reach
+    // disk before it's deleted.
+    constexpr DWORD kChunk = 8 * 1024 * 1024; // 8 MB
 
-    constexpr DWORD kChunk = 1024 * 1024; // 1 MB
     uint8_t* buf = static_cast<uint8_t*>(VirtualAlloc(nullptr, kChunk,
                                                         MEM_COMMIT | MEM_RESERVE,
                                                         PAGE_READWRITE));
-    if (!buf) {
-        CloseHandle(h);
-        DeleteFileW(fillPath.c_str());
-        return -1;
-    }
+    if (!buf) return -1;
     std::memset(buf, 0, kChunk);
 
+    std::vector<std::wstring> fillPaths;
     int64_t totalWritten = 0;
-    bool done = false;
+    bool stopAll = false;
+    int fileIndex = 0;
 
-    while (!done) {
-        if (s_cancelRequested.load() || static_cast<uint64_t>(totalWritten) >= target) {
-            break;
+    while (!stopAll && static_cast<uint64_t>(totalWritten) < target && !s_cancelRequested.load()) {
+        wchar_t suffix[16];
+        swprintf(suffix, 16, L"%04d", fileIndex++);
+        std::wstring fillPath = base + L"~hxewipe_fill" + suffix + L".tmp";
+
+        HANDLE h = CreateFileW(fillPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) break; // e.g. permission denied
+        fillPaths.push_back(fillPath);
+
+        uint64_t writtenThisFile = 0;
+        bool fileDone = false;
+
+        while (!fileDone) {
+            if (s_cancelRequested.load()) { stopAll = true; break; }
+
+            uint64_t remainingToTarget = target - static_cast<uint64_t>(totalWritten);
+            uint64_t remainingToFileCap = kPerFileCap - writtenThisFile;
+            DWORD toWrite = kChunk;
+            if (remainingToTarget < toWrite) toWrite = static_cast<DWORD>(remainingToTarget);
+            if (remainingToFileCap < toWrite) toWrite = static_cast<DWORD>(remainingToFileCap);
+            if (toWrite == 0) break; // hit this file's cap exactly - move to the next one
+
+            DWORD written = 0;
+            BOOL ok = WriteFile(h, buf, toWrite, &written, nullptr);
+            if (written > 0) {
+                totalWritten += written;
+                writtenThisFile += written;
+                s_bytesWritten = totalWritten;
+            }
+
+            if (!ok || written < toWrite) {
+                // Real disk-full (the volume was fuller than
+                // GetDiskFreeSpaceEx reported) or a genuine I/O error —
+                // either way, this is as far as we can go.
+                stopAll = true;
+                break;
+            }
         }
 
-        uint64_t remainingToTarget = target - static_cast<uint64_t>(totalWritten);
-        DWORD toWrite = (remainingToTarget < kChunk) ? static_cast<DWORD>(remainingToTarget) : kChunk;
-
-        DWORD written = 0;
-        BOOL ok = WriteFile(h, buf, toWrite, &written, nullptr);
-        if (written > 0) {
-            totalWritten += written;
-            s_bytesWritten = totalWritten;
-        }
-
-        // A short write or any error (including the disk turning out to
-        // be fuller than GetDiskFreeSpaceEx reported) ends the loop —
-        // either way we stop and clean up below.
-        if (!ok || written < toWrite) done = true;
+        FlushFileBuffers(h);
+        CloseHandle(h);
     }
 
-    FlushFileBuffers(h);
-    CloseHandle(h);
     VirtualFree(buf, 0, MEM_RELEASE);
-    DeleteFileW(fillPath.c_str());
+    for (const auto& p : fillPaths) DeleteFileW(p.c_str());
 
+    if (fillPaths.empty()) return -1; // never managed to create even one fill file
     return totalWritten;
 }
 

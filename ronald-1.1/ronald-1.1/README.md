@@ -257,12 +257,16 @@ build\bin\hexcore_manual_test.exe
      Save also skips `ReplaceFile` on non-NTFS volumes so these no
      longer get created there in the first place.
    - **Limpiar espacio libre (Wipe)...** fills the free space of the
-     drive/folder you pick with zeros (leaving a small safety margin so
-     the volume never hits 0 bytes free) so already-deleted files there
-     become unrecoverable, then removes the temporary fill file. It runs
-     in the background with a progress window you can cancel at any
-     time, so it never blocks or hangs the editor - and it can still
-     take a while on a large drive.
+     drive/folder you pick with zeros (leaving a small ~32 MB safety
+     margin so the volume never hits 0 bytes free) so already-deleted
+     files there become unrecoverable, then removes the temporary fill
+     file(s). It runs in the background with a progress window you can
+     cancel at any time, so it never blocks or hangs the editor. Since a
+     single file can't hold a whole large volume's free space on
+     FAT-family filesystems (FAT32 caps any one file just under 4 GiB),
+     it writes a series of fill files instead so the whole drive actually
+     gets covered rather than silently stopping after the first ~3 GiB -
+     and it can still take a while on a large drive.
 
 The status bar always shows the active tab's full path, its size, the
 cursor's current offset, and whether it has unsaved changes; the tab
