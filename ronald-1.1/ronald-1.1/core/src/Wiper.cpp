@@ -161,7 +161,7 @@ std::vector<std::wstring> SplitRelativeToRoot(const std::wstring& fullPath,
 } // namespace
 
 int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes,
-                                     FatVolume* fatVol, const std::wstring& volumeRootPrefix) {
+                                     std::vector<std::wstring>* visitedDirs) {
     if (ShouldStop()) return 0;
 
     std::wstring base = dir;
@@ -183,7 +183,7 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes,
             // Don't follow reparse points (junctions/symlinks) — avoids
             // loops and straying outside the folder the user picked.
             if (!(wfd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-                count += WipeEditorTempsRecursive(full, passes, fatVol, volumeRootPrefix);
+                count += WipeEditorTempsRecursive(full, passes, visitedDirs);
             }
         } else if (IsOrphanTempName(name)) {
             if (WipeFile(full, passes)) {
@@ -195,18 +195,7 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes,
 
     FindClose(hFind);
 
-    // If we have raw access to a locked FAT32 volume, also zero out this
-    // folder's own stale directory-entry slots' name/size/date content -
-    // the actual listing a tool like FTK Imager reads, which wiping
-    // free space or deleting files here never touches.
-    if (fatVol && !ShouldStop()) {
-        std::vector<std::wstring> components = SplitRelativeToRoot(dir, volumeRootPrefix);
-        uint32_t cluster = fatVol->ResolveDirectoryCluster(components);
-        if (cluster != 0) {
-            int wiped = fatVol->WipeStaleEntries(cluster);
-            if (wiped > 0) s_dirEntriesWiped = s_dirEntriesWiped.load() + wiped;
-        }
-    }
+    if (visitedDirs) visitedDirs->push_back(dir);
     s_tempsFoldersDone = s_tempsFoldersDone.load() + 1;
 
     return count;
@@ -223,14 +212,23 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
     constexpr uint64_t kGlobalBudgetMs = 45000; // hard cap so a folder-heavy drive still finishes fast
     s_deadlineTick = GetTickCount64() + kGlobalBudgetMs;
 
-    FatVolume fatVol;
-    FatVolume* fatVolPtr = nullptr;
-    std::wstring volumeRootPrefix;
-    bool locked = false;
+    // Phase 1: walk the tree using ordinary file APIs (find + wipe
+    // orphaned temp files), collecting every folder visited. This must
+    // finish - and every handle it used must close - before Phase 2
+    // locks the volume: FSCTL_LOCK_VOLUME grants OUR raw handle
+    // exclusive access, which blocks any ordinary file-level I/O
+    // (FindFirstFileW, CreateFileW) against that same volume, including
+    // our own. Locking first and walking second, tried initially, made
+    // the very first FindFirstFileW call fail immediately - visiting
+    // zero folders and wiping nothing, silently.
+    std::vector<std::wstring> visitedDirs;
+    int result = WipeEditorTempsRecursive(dir, passes, &visitedDirs);
 
+    // Phase 2: only for a FAT32 target with Administrator rights and an
+    // exclusively lockable volume, zero out each visited folder's own
+    // stale directory-entry content at the raw volume level.
     wchar_t volRoot[MAX_PATH] = {0};
-    if (GetVolumePathNameW(dir.c_str(), volRoot, MAX_PATH)) {
-        volumeRootPrefix = volRoot;
+    if (!ShouldStop() && GetVolumePathNameW(dir.c_str(), volRoot, MAX_PATH)) {
         wchar_t fsName[32] = {0};
         if (GetVolumeInformationW(volRoot, nullptr, 0, nullptr, nullptr, nullptr, fsName, 32) &&
             _wcsicmp(fsName, L"FAT32") == 0) {
@@ -238,31 +236,35 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
             devicePath += volRoot[0];
             devicePath += L':';
 
+            FatVolume fatVol;
             if (fatVol.Open(devicePath, true)) {
                 DWORD dummy = 0;
-                locked = DeviceIoControl(fatVol.RawHandle(), FSCTL_LOCK_VOLUME, nullptr, 0,
-                                          nullptr, 0, &dummy, nullptr) != 0;
+                bool locked = DeviceIoControl(fatVol.RawHandle(), FSCTL_LOCK_VOLUME, nullptr, 0,
+                                               nullptr, 0, &dummy, nullptr) != 0;
                 if (locked) {
-                    fatVolPtr = &fatVol;
                     s_fatWipeStatus = FatWipeStatus::Ran;
+                    std::wstring volumeRootPrefix = volRoot;
+                    for (const auto& visitedDir : visitedDirs) {
+                        if (ShouldStop()) break;
+                        std::vector<std::wstring> components = SplitRelativeToRoot(visitedDir, volumeRootPrefix);
+                        uint32_t cluster = fatVol.ResolveDirectoryCluster(components);
+                        if (cluster != 0) {
+                            int wiped = fatVol.WipeStaleEntries(cluster);
+                            if (wiped > 0) s_dirEntriesWiped = s_dirEntriesWiped.load() + wiped;
+                        }
+                    }
+                    DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0,
+                                     nullptr, 0, &dummy, nullptr);
                 } else {
                     s_fatWipeStatus = FatWipeStatus::VolumeInUse;
-                    fatVol.Close();
                 }
+                fatVol.Close();
             } else {
                 s_fatWipeStatus = FatWipeStatus::NeedsAdmin;
             }
         } else {
             s_fatWipeStatus = FatWipeStatus::NotFat32;
         }
-    }
-
-    int result = WipeEditorTempsRecursive(dir, passes, fatVolPtr, volumeRootPrefix);
-
-    if (locked) {
-        DWORD dummy = 0;
-        DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &dummy, nullptr);
-        fatVol.Close();
     }
 
     s_deadlineTick = 0;

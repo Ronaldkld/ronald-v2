@@ -3,6 +3,7 @@
 #include <string>
 #include <cstdint>
 #include <atomic>
+#include <vector>
 
 #include "FatVolume.h"
 
@@ -108,8 +109,12 @@ private:
     // True if `name` (a bare file name) looks like an orphaned safe-save
     // temp file this tool should wipe.
     static bool IsOrphanTempName(const std::wstring& name);
+    // Phase 1 of WipeEditorTemps: ordinary file-API walk only (find +
+    // wipe orphaned temp files); appends every folder visited to
+    // `visitedDirs` for Phase 2 to process afterward, once it's safe to
+    // lock the volume (see WipeEditorTemps).
     static int  WipeEditorTempsRecursive(const std::wstring& dir, int passes,
-                                          FatVolume* fatVol, const std::wstring& volumeRootPrefix);
+                                          std::vector<std::wstring>* visitedDirs);
 
     // True once RequestCancel() was called, or the WipeEditorTemps call
     // in progress has run past its overall time budget - checked
