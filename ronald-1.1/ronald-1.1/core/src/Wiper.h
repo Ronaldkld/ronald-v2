@@ -126,11 +126,9 @@ private:
     // temp file this tool should wipe.
     static bool IsOrphanTempName(const std::wstring& name);
     // Phase 1 of WipeEditorTemps: ordinary file-API walk only (find +
-    // wipe orphaned temp files); appends every folder visited to
-    // `visitedDirs` for Phase 2 to process afterward, once it's safe to
-    // lock the volume (see WipeEditorTemps).
-    static int  WipeEditorTempsRecursive(const std::wstring& dir, int passes,
-                                          std::vector<std::wstring>* visitedDirs);
+    // wipe orphaned temp files). Must finish - and close every handle it
+    // used - before Phase 2 locks the volume (see WipeEditorTemps).
+    static int  WipeEditorTempsRecursive(const std::wstring& dir, int passes);
 
     // True once RequestCancel() was called, or the WipeEditorTemps call
     // in progress has run past its overall time budget - checked

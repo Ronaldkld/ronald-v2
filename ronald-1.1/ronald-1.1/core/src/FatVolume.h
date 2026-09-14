@@ -105,6 +105,19 @@ public:
     // opened with writable=true.
     int WipeStaleEntries(uint32_t startCluster);
 
+    // Wipes stale entries in the directory at `startCluster`, then
+    // recurses into every LIVE subdirectory found there (via
+    // ListEntries's own cluster numbers - no path-string matching
+    // involved at all, which is what makes this immune to the class of
+    // bug ResolveDirectoryCluster had: it only ever needs to resolve the
+    // one folder the caller picked, not re-match a name at every level
+    // for every folder in the tree). Skips "." and "..". Stops
+    // descending (but keeps prior results) once `deadlineTick`
+    // (GetTickCount64() value, 0 = no deadline) has passed, or `maxDepth`
+    // is exhausted. Returns the total entries wiped across the whole
+    // subtree, or -1 on a hard error.
+    int WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlineTick = 0, int maxDepth = 64);
+
     const FatBpb& Bpb() const { return m_bpb; }
 
 private:

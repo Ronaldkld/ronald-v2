@@ -340,4 +340,22 @@ int FatVolume::WipeStaleEntries(uint32_t startCluster) {
     return wiped;
 }
 
+int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlineTick, int maxDepth) {
+    if (maxDepth <= 0) return 0;
+    if (deadlineTick != 0 && GetTickCount64() >= deadlineTick) return 0;
+
+    int total = WipeStaleEntries(startCluster);
+    if (total < 0) return total;
+
+    for (const auto& entry : ListEntries(startCluster)) {
+        if (!entry.isDirectory) continue;
+        if (entry.name == L"." || entry.name == L"..") continue;
+        if (entry.cluster < 2) continue;
+
+        int sub = WipeStaleEntriesRecursive(entry.cluster, deadlineTick, maxDepth - 1);
+        if (sub > 0) total += sub;
+    }
+    return total;
+}
+
 } // namespace hexcore
