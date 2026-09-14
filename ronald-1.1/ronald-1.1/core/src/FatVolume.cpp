@@ -579,4 +579,53 @@ int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<
     return total;
 }
 
+std::wstring FatVolume::DumpDirectoryRaw(uint32_t startCluster, int maxEntries) {
+    std::wstring out;
+    if (startCluster < 2) return out;
+
+    int count = 0;
+    int clusterIdx = 0;
+    for (uint32_t cluster : WalkClusterChain(startCluster)) {
+        std::vector<uint8_t> data = ReadCluster(cluster);
+        if (data.empty()) {
+            wchar_t line[128];
+            swprintf(line, 128, L"[cluster #%d = %u] READ FAILED\r\n", clusterIdx, cluster);
+            out += line;
+            ++clusterIdx;
+            continue;
+        }
+
+        for (size_t off = 0; off + kEntrySize <= data.size() && count < maxEntries; off += kEntrySize, ++count) {
+            const uint8_t* e = data.data() + off;
+            uint8_t firstByte = e[0];
+            uint8_t attr = e[11];
+
+            wchar_t line[220];
+            if (attr == 0x0F) {
+                swprintf(line, 220, L"c#%d(clu=%u) off=0x%04X first=0x%02X  LFN-fragment\r\n",
+                         clusterIdx, cluster, static_cast<unsigned>(off), firstByte);
+            } else {
+                uint16_t hi, lo;
+                std::memcpy(&hi, e + 20, 2);
+                std::memcpy(&lo, e + 26, 2);
+                uint32_t entCluster = (static_cast<uint32_t>(hi) << 16) | lo;
+                std::wstring shortName = ShortNameToString(e);
+                swprintf(line, 220,
+                         L"c#%d(clu=%u) off=0x%04X first=0x%02X attr=0x%02X dir=%s name=\"%s\" cluster=%u\r\n",
+                         clusterIdx, cluster, static_cast<unsigned>(off), firstByte, attr,
+                         (attr & 0x10) ? L"Y" : L"N", shortName.c_str(), entCluster);
+            }
+            out += line;
+        }
+        ++clusterIdx;
+        if (count >= maxEntries) break;
+    }
+
+    wchar_t summary[160];
+    swprintf(summary, 160, L"\r\n--- total clusters in chain: %d, entries listed: %d%s ---\r\n",
+             clusterIdx, count, count >= maxEntries ? L" (hit the cap)" : L"");
+    out += summary;
+    return out;
+}
+
 } // namespace hexcore

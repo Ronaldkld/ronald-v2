@@ -19,6 +19,7 @@
 #define IDM_EDIT_DELETE              40016
 #define IDM_TOOLS_WIPE_EDITOR_TEMPS  40017
 #define IDM_TOOLS_WIPE_FREE_SPACE    40018
+#define IDM_TOOLS_DUMP_FOLDER_RAW    40019
 
 #define IDR_MAINMENU        101
 #define IDR_ACCEL           102

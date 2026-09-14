@@ -200,6 +200,17 @@ public:
                                  std::atomic<int>* liveEntriesWiped,
                                  std::atomic<int64_t>* clustersScanned = nullptr);
 
+    // Diagnostic-only, read-only, never writes anything: walks EVERY
+    // cluster in the directory's full chain with no early stop of any
+    // kind, and returns one line per 32-byte slot exactly as found on
+    // disk - live, deleted (0xE5), or an LFN fragment - with its raw
+    // first byte, attribute byte, short name, and (for anything with the
+    // ATTR_DIRECTORY bit) its cluster pointer. Exists to see ground
+    // truth on a real, complex drive when ListEntries/WipeStaleEntries
+    // don't seem to be finding everything they should - nothing else in
+    // this class does a truly unfiltered dump like this.
+    std::wstring DumpDirectoryRaw(uint32_t startCluster, int maxEntries = 20000);
+
     const FatBpb& Bpb() const { return m_bpb; }
 
 private:

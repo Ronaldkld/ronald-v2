@@ -78,6 +78,15 @@ public:
     static int64_t GetOrphanClustersScanned();
     static int64_t GetOrphanTotalClusters();
 
+    // Diagnostic-only, read-only, never writes anything: resolves `dir`
+    // to its FAT32 cluster (by name, from the volume root - this is the
+    // OLD path-based lookup the wipe itself no longer relies on, fine
+    // here since nothing destructive follows a wrong answer) and returns
+    // FatVolume::DumpDirectoryRaw's unfiltered listing of every 32-byte
+    // slot found in its full cluster chain. An error is returned as a
+    // plain "ERROR: ..." string rather than thrown.
+    static std::wstring DumpFolderRaw(const std::wstring& dir);
+
     // What happened with the raw FAT32 directory-entry pass during the
     // most recent WipeEditorTemps call.
     enum class FatWipeStatus {

@@ -291,6 +291,51 @@ int Wiper::GetDirReadErrors() { return s_dirReadErrors.load(); }
 int Wiper::GetSubdirsFound() { return s_subdirsFound.load(); }
 int64_t Wiper::GetOrphanClustersScanned() { return s_orphanClustersScanned.load(); }
 int64_t Wiper::GetOrphanTotalClusters() { return s_orphanTotalClusters.load(); }
+
+std::wstring Wiper::DumpFolderRaw(const std::wstring& dir) {
+    wchar_t volRoot[MAX_PATH] = {0};
+    if (!GetVolumePathNameW(dir.c_str(), volRoot, MAX_PATH)) {
+        return L"ERROR: GetVolumePathNameW failed";
+    }
+    wchar_t fsName[32] = {0};
+    if (!GetVolumeInformationW(volRoot, nullptr, 0, nullptr, nullptr, nullptr, fsName, 32) ||
+        _wcsicmp(fsName, L"FAT32") != 0) {
+        return L"ERROR: target volume is not FAT32";
+    }
+
+    std::wstring devicePath = L"\\\\.\\";
+    devicePath += volRoot[0];
+    devicePath += L':';
+
+    FatVolume fatVol;
+    if (!fatVol.Open(devicePath, false)) {
+        return L"ERROR: could not open the raw volume for reading - try running as Administrator";
+    }
+
+    std::wstring volRootStr(volRoot);
+    std::wstring rel = dir.size() >= volRootStr.size() ? dir.substr(volRootStr.size()) : std::wstring();
+    std::vector<std::wstring> components;
+    size_t start = 0;
+    while (start < rel.size()) {
+        size_t sep = rel.find_first_of(L"\\/", start);
+        std::wstring comp = rel.substr(start, sep == std::wstring::npos ? std::wstring::npos : sep - start);
+        if (!comp.empty()) components.push_back(comp);
+        if (sep == std::wstring::npos) break;
+        start = sep + 1;
+    }
+
+    uint32_t cluster = components.empty() ? fatVol.Bpb().rootCluster
+                                           : fatVol.ResolveDirectoryCluster(components);
+    if (cluster == 0) {
+        fatVol.Close();
+        return L"ERROR: could not resolve that folder by name on the raw volume - pick a shallower "
+               L"parent folder (or the drive root) instead and look for it in the dump";
+    }
+
+    std::wstring dump = fatVol.DumpDirectoryRaw(cluster);
+    fatVol.Close();
+    return dump;
+}
 Wiper::FatWipeStatus Wiper::GetFatWipeStatus() { return s_fatWipeStatus; }
 
 // ---------------------------------------------------------------------------

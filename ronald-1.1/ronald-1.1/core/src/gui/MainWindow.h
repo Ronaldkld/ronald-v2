@@ -98,6 +98,7 @@ private:
     void CmdPrevTab();
     void CmdWipeEditorTemps();
     void CmdWipeFreeSpace();
+    void CmdDumpFolderRaw();
 
     // Both Tools > Wipe commands run on a worker thread (they can take
     // a while) with a small modeless progress window that polls Wiper's

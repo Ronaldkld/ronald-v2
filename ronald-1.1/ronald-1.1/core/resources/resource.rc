@@ -33,6 +33,8 @@ BEGIN
         MENUITEM "Limpiar rastros de archivos borrados...", IDM_TOOLS_WIPE_EDITOR_TEMPS
         MENUITEM SEPARATOR
         MENUITEM "Limpiar espacio libre (Wipe)...",  IDM_TOOLS_WIPE_FREE_SPACE
+        MENUITEM SEPARATOR
+        MENUITEM "Diagnostico: volcar carpeta cruda...", IDM_TOOLS_DUMP_FOLDER_RAW
     END
     POPUP "&Help"
     BEGIN

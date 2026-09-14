@@ -194,6 +194,7 @@ void MainWindow::OnCommand(int id) {
         case IDM_FILE_PREVTAB: CmdPrevTab(); break;
         case IDM_TOOLS_WIPE_EDITOR_TEMPS: CmdWipeEditorTemps(); break;
         case IDM_TOOLS_WIPE_FREE_SPACE: CmdWipeFreeSpace(); break;
+        case IDM_TOOLS_DUMP_FOLDER_RAW: CmdDumpFolderRaw(); break;
         case IDM_HELP_ABOUT: CmdAbout(); break;
         default: break;
     }
@@ -686,6 +687,51 @@ void MainWindow::CmdWipeFreeSpace() {
         int64_t written = hexcore::Wiper::WipeFreeSpace(m_wipeVolumeRoot);
         PostMessageW(m_hwnd, kMsgWipeFreeSpaceDone, 0, static_cast<LPARAM>(written));
     });
+}
+
+void MainWindow::CmdDumpFolderRaw() {
+    std::wstring picked;
+    if (!PickFolder(m_hwnd,
+            L"Diagnostic only - nothing on the drive is changed. Pick the folder whose raw "
+            L"FAT32 directory entries should be dumped (if a deep folder fails to resolve, "
+            L"try a shallower parent, or the drive root, instead).",
+            picked)) {
+        return;
+    }
+
+    std::wstring dump = hexcore::Wiper::DumpFolderRaw(picked);
+
+    wchar_t tempPath[MAX_PATH] = {0};
+    GetTempPathW(MAX_PATH, tempPath);
+    std::wstring outPath = std::wstring(tempPath) + L"hexeditor_raw_dump.txt";
+
+    HANDLE h = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+    bool wroteFile = false;
+    if (h != INVALID_HANDLE_VALUE) {
+        int len = WideCharToMultiByte(CP_UTF8, 0, dump.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            std::vector<char> utf8(static_cast<size_t>(len));
+            WideCharToMultiByte(CP_UTF8, 0, dump.c_str(), -1, utf8.data(), len, nullptr, nullptr);
+            DWORD written = 0;
+            WriteFile(h, utf8.data(), static_cast<DWORD>(len - 1), &written, nullptr);
+            wroteFile = (written == static_cast<DWORD>(len - 1));
+        }
+        CloseHandle(h);
+    }
+
+    std::wstring msg;
+    if (dump.rfind(L"ERROR:", 0) == 0) {
+        msg = dump;
+    } else if (wroteFile) {
+        msg = L"Diagnostic dump written to:\n" + outPath +
+              L"\n\nOpen that file and send it back - it lists every raw 32-byte "
+              L"directory-entry slot found in that folder's full cluster chain, live and "
+              L"deleted alike, exactly as stored on disk. Nothing was changed.";
+    } else {
+        msg = L"Could not write the dump file to " + outPath + L".";
+    }
+    MessageBoxW(m_hwnd, msg.c_str(), L"Raw Directory Dump", MB_OK | MB_ICONINFORMATION);
 }
 
 LRESULT CALLBACK MainWindow::WipeProgressWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
