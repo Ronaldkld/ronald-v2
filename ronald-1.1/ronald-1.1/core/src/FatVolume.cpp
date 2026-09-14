@@ -215,12 +215,23 @@ FatResolveResult FatVolume::ResolveDirectoryClusterEx(const std::vector<std::wst
         for (uint32_t cluster : WalkClusterChain(currentCluster)) {
             std::vector<uint8_t> data = ReadCluster(cluster);
             if (data.empty()) break;
-            bool endOfDir = false;
 
             for (size_t off = 0; off + kEntrySize <= data.size(); off += kEntrySize) {
                 const uint8_t* e = data.data() + off;
                 uint8_t firstByte = e[0];
-                if (firstByte == 0x00) { endOfDir = true; break; }
+                // A 0x00 first byte formally means "never-used slot", and
+                // the FAT32 spec's own convention is that everything after
+                // the first one is unused too - so a compliant driver can
+                // stop right here. Real-world drives don't always keep that
+                // invariant though (entries can end up with an unused gap
+                // followed by more live ones, especially after years of
+                // create/delete churn) - treating it as just "skip this
+                // slot" instead of "stop scanning" costs a little extra,
+                // bounded I/O over the directory's already-allocated
+                // clusters, but is what actually finds every subfolder on a
+                // real, heavily-used volume instead of silently stopping
+                // partway through it.
+                if (firstByte == 0x00) { pendingLfn.clear(); continue; }
                 if (firstByte == 0xE5) { pendingLfn.clear(); continue; } // deleted - not a live entry
 
                 uint8_t attr = e[11];
@@ -246,7 +257,7 @@ FatResolveResult FatVolume::ResolveDirectoryClusterEx(const std::vector<std::wst
                     foundCluster = (static_cast<uint32_t>(hi) << 16) | lo;
                 }
             }
-            if (endOfDir || foundCluster != 0) break;
+            if (foundCluster != 0) break;
         }
 
         if (foundCluster == 0) {
@@ -271,18 +282,16 @@ FatScanResult FatVolume::ScanDirectory(uint32_t startCluster) {
     for (uint32_t cluster : WalkClusterChain(startCluster)) {
         std::vector<uint8_t> data = ReadCluster(cluster);
         if (data.empty()) return result;
-        bool endOfDir = false;
 
         for (size_t off = 0; off + kEntrySize <= data.size(); off += kEntrySize) {
             const uint8_t* e = data.data() + off;
             uint8_t firstByte = e[0];
-            if (firstByte == 0x00) { endOfDir = true; break; }
+            if (firstByte == 0x00) continue; // unused slot, not necessarily the true end (see comment above)
             if (firstByte == 0xE5) { ++result.staleEntries; continue; }
             uint8_t attr = e[11];
             if (attr & 0x08) continue; // volume label
             if (attr != 0x0F) ++result.liveEntries; // count short entries only, not LFN fragments
         }
-        if (endOfDir) break;
     }
     result.ok = true;
     return result;
@@ -297,12 +306,11 @@ std::vector<FatDirEntry> FatVolume::ListEntries(uint32_t startCluster) {
     for (uint32_t cluster : WalkClusterChain(startCluster)) {
         std::vector<uint8_t> data = ReadCluster(cluster);
         if (data.empty()) break;
-        bool endOfDir = false;
 
         for (size_t off = 0; off + kEntrySize <= data.size(); off += kEntrySize) {
             const uint8_t* e = data.data() + off;
             uint8_t firstByte = e[0];
-            if (firstByte == 0x00) { endOfDir = true; break; }
+            if (firstByte == 0x00) { pendingLfn.clear(); continue; } // unused slot, not necessarily the true end
             if (firstByte == 0xE5) { pendingLfn.clear(); continue; }
 
             uint8_t attr = e[11];
@@ -327,7 +335,6 @@ std::vector<FatDirEntry> FatVolume::ListEntries(uint32_t startCluster) {
             entry.cluster = (static_cast<uint32_t>(hi) << 16) | lo;
             out.push_back(entry);
         }
-        if (endOfDir) break;
     }
     return out;
 }
@@ -349,18 +356,16 @@ int FatVolume::WipeStaleEntries(uint32_t startCluster) {
     for (uint32_t cluster : WalkClusterChain(startCluster)) {
         std::vector<uint8_t> data = ReadCluster(cluster);
         if (data.empty()) return -1;
-        bool endOfDir = false;
         uint64_t clusterBase = ClusterByteOffset(cluster);
 
         for (size_t off = 0; off + kEntrySize <= data.size(); off += kEntrySize) {
             uint8_t firstByte = data[off];
-            if (firstByte == 0x00) { endOfDir = true; break; }
+            if (firstByte == 0x00) continue; // unused slot, not necessarily the true end (see ListEntries)
             if (firstByte == 0xE5) {
                 if (!WriteBytesAt(clusterBase + off + 1, zeroTail, sizeof(zeroTail))) return -1;
                 ++wiped;
             }
         }
-        if (endOfDir) break;
     }
     return wiped;
 }
