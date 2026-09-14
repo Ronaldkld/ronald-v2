@@ -38,6 +38,10 @@ struct FatBpb {
     uint32_t rootCluster = 0;
     uint64_t fatStartByte = 0;
     uint64_t dataStartByte = 0;
+    // Highest valid data cluster number is totalDataClusters + 1 (cluster
+    // numbering starts at 2). Needed to know where a full-volume cluster
+    // scan (WipeOrphanedDirectories) should stop.
+    uint32_t totalDataClusters = 0;
 };
 
 struct FatScanResult {
@@ -169,6 +173,25 @@ public:
     // happens to look like a stale (0xE5) slot - would corrupt that live
     // file's or folder's actual data instead of a truly-deleted one.
     bool IsClusterFree(uint32_t cluster);
+
+    // Fallback pass for a directory that is fully orphaned - no entry
+    // anywhere on the volume, live or deleted, still points to it, which
+    // is exactly the case WipeStaleEntriesRecursive (however thorough)
+    // can never reach: it only ever follows pointers, and this directory
+    // has none left pointing to it. A forensic tool's own "orphan"
+    // recovery finds folders like this by scanning raw clusters for a
+    // directory's own signature instead of following pointers - this
+    // does the same thing: walks every still-FREE cluster on the volume
+    // (IsClusterFree, via a single bulk FAT read rather than one lookup
+    // per candidate) looking for one that still starts with a
+    // directory's own "." and ".." entries, and runs the normal
+    // recursive wipe from there when it finds one. Can be slow on a
+    // large, mostly-empty volume - there's no way around touching every
+    // free cluster at least once - so it honors the same
+    // deadline/cancel contract as WipeStaleEntriesRecursive.
+    int WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<bool>* cancelFlag,
+                                 std::atomic<int>* liveDirsVisited,
+                                 std::atomic<int>* liveEntriesWiped);
 
     const FatBpb& Bpb() const { return m_bpb; }
 

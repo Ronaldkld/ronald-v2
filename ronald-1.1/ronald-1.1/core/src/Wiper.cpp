@@ -246,6 +246,20 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                     s_dirReadErrors = fatVol.LastDirReadErrors();
                     s_subdirsFound = fatVol.LastSubdirsFound();
 
+                    // Phase 3: a directory that's fully orphaned - no
+                    // entry anywhere on the volume, live or deleted,
+                    // still points to it - can never be reached by the
+                    // pointer-following walk above no matter how
+                    // thorough it is. This is exactly the class of
+                    // folder a forensic tool's own "orphan" recovery
+                    // finds by scanning raw clusters for a directory's
+                    // own signature instead of following pointers -
+                    // same idea here.
+                    if (!s_cancelRequested.load()) {
+                        fatVol.WipeOrphanedDirectories(0, &s_cancelRequested, &s_dirsVisitedRaw,
+                                                        &s_dirEntriesWiped);
+                    }
+
                     DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0,
                                      nullptr, 0, &dummy, nullptr);
                 } else {

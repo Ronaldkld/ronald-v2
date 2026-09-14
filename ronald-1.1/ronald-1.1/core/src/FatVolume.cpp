@@ -107,7 +107,9 @@ bool FatVolume::ParseBpb() {
     uint16_t reservedSectors; std::memcpy(&reservedSectors, sector0 + 0x0E, 2);
     uint8_t numFats = sector0[0x10];
     uint16_t rootEntCnt; std::memcpy(&rootEntCnt, sector0 + 0x11, 2);
+    uint16_t totSec16; std::memcpy(&totSec16, sector0 + 0x13, 2);
     uint16_t fatSz16; std::memcpy(&fatSz16, sector0 + 0x16, 2);
+    uint32_t totSec32; std::memcpy(&totSec32, sector0 + 0x20, 4);
     uint32_t fatSz32; std::memcpy(&fatSz32, sector0 + 0x24, 4);
     uint32_t rootCluster; std::memcpy(&rootCluster, sector0 + 0x2C, 4);
 
@@ -125,6 +127,13 @@ bool FatVolume::ParseBpb() {
     m_bpb.fatStartByte = static_cast<uint64_t>(reservedSectors) * bytesPerSector;
     m_bpb.dataStartByte = m_bpb.fatStartByte +
         static_cast<uint64_t>(numFats) * fatSz32 * bytesPerSector;
+
+    uint32_t totalSectors = totSec32 != 0 ? totSec32 : totSec16;
+    uint64_t dataSectors = totalSectors > (static_cast<uint64_t>(reservedSectors) + numFats * fatSz32)
+        ? totalSectors - (static_cast<uint64_t>(reservedSectors) + numFats * fatSz32)
+        : 0;
+    m_bpb.totalDataClusters = sectorsPerCluster ?
+        static_cast<uint32_t>(dataSectors / sectorsPerCluster) : 0;
     return true;
 }
 
@@ -457,6 +466,57 @@ int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlin
         if (!IsClusterFree(cluster)) continue;
         ++m_subdirsFound;
         int sub = WipeStaleEntriesRecursive(cluster, deadlineTick, cancelFlag, maxDepth - 1,
+                                             liveDirsVisited, liveEntriesWiped);
+        if (sub > 0) total += sub;
+    }
+    return total;
+}
+
+int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<bool>* cancelFlag,
+                                        std::atomic<int>* liveDirsVisited,
+                                        std::atomic<int>* liveEntriesWiped) {
+    int total = 0;
+    if (m_bpb.totalDataClusters < 1) return 0;
+    uint32_t maxCluster = m_bpb.totalDataClusters + 1; // cluster numbering starts at 2
+
+    // One bulk read of the whole FAT instead of a seek+read per candidate
+    // cluster - the difference between one read and up to millions of
+    // 4-byte ones on a large, mostly-empty volume.
+    size_t fatBytes = static_cast<size_t>(m_bpb.fatSizeSectors) * m_bpb.bytesPerSector;
+    std::vector<uint8_t> fatTable(fatBytes);
+    {
+        LARGE_INTEGER li; li.QuadPart = static_cast<LONGLONG>(m_bpb.fatStartByte);
+        if (!SetFilePointerEx(m_handle, li, nullptr, FILE_BEGIN)) return 0;
+        DWORD readBytes = 0;
+        if (!ReadFile(m_handle, fatTable.data(), static_cast<DWORD>(fatTable.size()), &readBytes, nullptr) ||
+            readBytes != fatTable.size()) {
+            return 0;
+        }
+    }
+    auto isFree = [&](uint32_t cluster) {
+        size_t off = static_cast<size_t>(cluster) * 4;
+        if (off + 4 > fatTable.size()) return false;
+        uint32_t value;
+        std::memcpy(&value, fatTable.data() + off, 4);
+        return (value & kFatMask) == 0;
+    };
+
+    for (uint32_t cluster = 2; cluster <= maxCluster; ++cluster) {
+        if (deadlineTick != 0 && GetTickCount64() >= deadlineTick) break;
+        if (cancelFlag && cancelFlag->load()) break;
+        if (!isFree(cluster)) continue;
+
+        std::vector<uint8_t> data = ReadCluster(cluster);
+        if (data.size() < kEntrySize * 2) continue;
+        const uint8_t* dot = data.data();
+        const uint8_t* dotdot = data.data() + kEntrySize;
+        bool looksLikeDir =
+            dot[0] == '.' && (dot[11] & 0x10) && std::memcmp(dot + 1, "          ", 10) == 0 &&
+            dotdot[0] == '.' && dotdot[1] == '.' && (dotdot[11] & 0x10) &&
+            std::memcmp(dotdot + 2, "         ", 9) == 0;
+        if (!looksLikeDir) continue;
+
+        int sub = WipeStaleEntriesRecursive(cluster, deadlineTick, cancelFlag, 64,
                                              liveDirsVisited, liveEntriesWiped);
         if (sub > 0) total += sub;
     }
