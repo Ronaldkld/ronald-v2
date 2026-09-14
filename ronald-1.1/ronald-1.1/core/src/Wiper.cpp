@@ -266,15 +266,28 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                                 // expected name is even present there or spelled
                                 // differently from what this reader reconstructs.
                                 std::vector<FatDirEntry> entries = fatVol.ListEntries(resolved.lastGoodCluster);
+                                int totalCount = static_cast<int>(entries.size());
+                                int dirCount = 0;
+                                for (const auto& re : entries) if (re.isDirectory) ++dirCount;
+
+                                // Matching only ever considers directory
+                                // entries (see ResolveDirectoryCluster), so
+                                // show just those - a folder full of files
+                                // would otherwise bury the one subfolder
+                                // name that actually matters past any
+                                // reasonable display limit.
                                 std::wstring dump = L"Looking for \"" + resolved.failedComponent +
-                                                     L"\" among:\n";
+                                                     L"\" (a subfolder) among the " + std::to_wstring(dirCount) +
+                                                     L" subfolder(s) here (of " + std::to_wstring(totalCount) +
+                                                     L" entries total):\n";
                                 int shown = 0;
                                 for (const auto& re : entries) {
-                                    if (shown >= 60) { dump += L"... (more)\n"; break; }
-                                    dump += re.name + (re.isDirectory ? L" [DIR]\n" : L"\n");
+                                    if (!re.isDirectory) continue;
+                                    if (shown >= 100) { dump += L"... (more)\n"; break; }
+                                    dump += re.name + L"\n";
                                     ++shown;
                                 }
-                                if (entries.empty()) dump += L"(nothing - empty or unreadable)\n";
+                                if (dirCount == 0) dump += L"(no subfolders found here at all)\n";
                                 s_rootEntriesDump = dump;
                             }
                             s_dirsUnresolved = s_dirsUnresolved.load() + 1;
