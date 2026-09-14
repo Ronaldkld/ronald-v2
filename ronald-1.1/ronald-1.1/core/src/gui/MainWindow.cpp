@@ -790,6 +790,7 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
     }
     int foldersDone = hexcore::Wiper::GetTempsFoldersDone();
     int dirEntriesWiped = hexcore::Wiper::GetDirEntriesWiped();
+    int dirsUnresolved = hexcore::Wiper::GetDirsUnresolved();
     hexcore::Wiper::FatWipeStatus fatStatus = hexcore::Wiper::GetFatWipeStatus();
     m_activeWipeKind = WipeKind::None;
     EnableWindow(m_hwnd, TRUE);
@@ -815,11 +816,19 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
                              L"including any tabs open on it in this editor, then try again).";
             break;
         case hexcore::Wiper::FatWipeStatus::Ran: {
-            static wchar_t ranBuf[160];
-            swprintf(ranBuf, 160, L"\n\nAlso zeroed the name/size/date of %d deleted directory "
-                                   L"entry (or entries) directly on the FAT32 volume - the actual "
-                                   L"listing a tool like FTK Imager reads.", dirEntriesWiped);
-            fatStatusLine = ranBuf;
+            static std::wstring ranMsg;
+            wchar_t head[200];
+            swprintf(head, 200, L"\n\nAlso zeroed the name/size/date of %d deleted directory "
+                                 L"entry (or entries) directly on the FAT32 volume - the actual "
+                                 L"listing a tool like FTK Imager reads.", dirEntriesWiped);
+            ranMsg = head;
+            if (dirsUnresolved > 0) {
+                ranMsg += L"\n\n" + std::to_wstring(dirsUnresolved) +
+                          L" folder(s) could not be located on the raw volume at all (path "
+                          L"lookup failed) and were skipped - if the folder you expected "
+                          L"entries in is one of those, that's why nothing changed there.";
+            }
+            fatStatusLine = ranMsg.c_str();
             break;
         }
         case hexcore::Wiper::FatWipeStatus::NotAttempted:

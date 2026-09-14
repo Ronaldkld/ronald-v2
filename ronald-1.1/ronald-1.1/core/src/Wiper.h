@@ -60,6 +60,13 @@ public:
     static int GetTempsFoldersDone();
     static int GetDirEntriesWiped();
 
+    // Of the folders visited, how many the raw FAT32 pass could NOT
+    // resolve back to a cluster (path-component lookup failed) and so
+    // never got scanned at all - as opposed to being scanned and
+    // genuinely having zero stale entries. Distinguishes "correctly
+    // found nothing" from "silently couldn't even look".
+    static int GetDirsUnresolved();
+
     // What happened with the raw FAT32 directory-entry pass during the
     // most recent WipeEditorTemps call.
     enum class FatWipeStatus {
@@ -127,6 +134,7 @@ private:
     static std::atomic<int>      s_tempsFilesWiped;
     static std::atomic<int>      s_tempsFoldersDone;
     static std::atomic<int>      s_dirEntriesWiped;
+    static std::atomic<int>      s_dirsUnresolved;
     static std::atomic<uint64_t> s_deadlineTick; // GetTickCount64() value to stop by; 0 = no deadline
     static FatWipeStatus         s_fatWipeStatus;
 };

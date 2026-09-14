@@ -1,5 +1,6 @@
 #include "FatVolume.h"
 
+#include <array>
 #include <cstring>
 #include <cwctype>
 
@@ -16,16 +17,29 @@ std::wstring ToUpperCopy(const std::wstring& s) {
     return r;
 }
 
+// One 32-byte directory entry, copied out of its cluster buffer. A
+// folder's LFN sequence can straddle a directory-cluster boundary (its
+// tail in one cluster, the short entry it belongs to at the start of
+// the next), and ResolveDirectoryCluster reads one cluster into a fresh
+// local buffer per iteration - so entries must be copied out, not kept
+// as raw pointers into that buffer, or they dangle the moment the loop
+// moves to the next cluster. An earlier version kept raw pointers,
+// which silently corrupted long-name reconstruction (undefined
+// behavior reading freed memory) for exactly the folders whose name
+// happened to straddle a cluster boundary - not something a
+// single-cluster-directory test catches.
+using RawEntry = std::array<uint8_t, kEntrySize>;
+
 // Reconstructs a long file name from a run of LFN entries stored in
 // on-disk order (highest sequence number first, immediately preceding
 // the short entry they belong to).
-std::wstring AssembleLongName(const std::vector<const uint8_t*>& lfnEntriesHighToLow) {
+std::wstring AssembleLongName(const std::vector<RawEntry>& lfnEntriesHighToLow) {
     std::wstring name;
     // Walk from the lowest sequence number (last in this vector, closest
     // to the short entry - i.e. the FIRST part of the name) to the
     // highest (first in this vector, the LAST part of the name).
     for (auto it = lfnEntriesHighToLow.rbegin(); it != lfnEntriesHighToLow.rend(); ++it) {
-        const uint8_t* e = *it;
+        const uint8_t* e = it->data();
         uint16_t units[13];
         std::memcpy(&units[0], e + 1, 10);
         std::memcpy(&units[5], e + 14, 12);
@@ -167,7 +181,7 @@ uint32_t FatVolume::ResolveDirectoryCluster(const std::vector<std::wstring>& rel
     for (const auto& wanted : relativePathComponents) {
         std::wstring wantedUpper = ToUpperCopy(wanted);
         uint32_t foundCluster = 0;
-        std::vector<const uint8_t*> pendingLfn;
+        std::vector<RawEntry> pendingLfn;
 
         for (uint32_t cluster : WalkClusterChain(currentCluster)) {
             std::vector<uint8_t> data = ReadCluster(cluster);
@@ -181,7 +195,12 @@ uint32_t FatVolume::ResolveDirectoryCluster(const std::vector<std::wstring>& rel
                 if (firstByte == 0xE5) { pendingLfn.clear(); continue; } // deleted - not a live entry
 
                 uint8_t attr = e[11];
-                if (attr == 0x0F) { pendingLfn.push_back(e); continue; }
+                if (attr == 0x0F) {
+                    RawEntry copy;
+                    std::memcpy(copy.data(), e, kEntrySize);
+                    pendingLfn.push_back(copy);
+                    continue;
+                }
                 if (attr & 0x08) { pendingLfn.clear(); continue; } // volume label
 
                 std::wstring longName = pendingLfn.empty() ? std::wstring() : AssembleLongName(pendingLfn);
