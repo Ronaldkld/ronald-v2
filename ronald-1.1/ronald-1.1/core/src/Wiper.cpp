@@ -21,6 +21,7 @@ std::atomic<int>      Wiper::s_tempsFilesWiped{0};
 std::atomic<int>      Wiper::s_tempsFoldersDone{0};
 std::atomic<int>      Wiper::s_dirEntriesWiped{0};
 std::atomic<int>      Wiper::s_dirsUnresolved{0};
+std::wstring          Wiper::s_firstUnresolvedDir;
 std::atomic<uint64_t> Wiper::s_deadlineTick{0};
 Wiper::FatWipeStatus  Wiper::s_fatWipeStatus{Wiper::FatWipeStatus::NotAttempted};
 
@@ -209,6 +210,7 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
     s_tempsFoldersDone = 0;
     s_dirEntriesWiped = 0;
     s_dirsUnresolved = 0;
+    s_firstUnresolvedDir.clear();
     s_fatWipeStatus = FatWipeStatus::NotAttempted;
 
     constexpr uint64_t kGlobalBudgetMs = 45000; // hard cap so a folder-heavy drive still finishes fast
@@ -254,6 +256,7 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                             int wiped = fatVol.WipeStaleEntries(cluster);
                             if (wiped > 0) s_dirEntriesWiped = s_dirEntriesWiped.load() + wiped;
                         } else {
+                            if (s_dirsUnresolved.load() == 0) s_firstUnresolvedDir = visitedDir;
                             s_dirsUnresolved = s_dirsUnresolved.load() + 1;
                         }
                     }
@@ -279,6 +282,7 @@ int Wiper::GetTempsFilesWiped() { return s_tempsFilesWiped.load(); }
 int Wiper::GetTempsFoldersDone() { return s_tempsFoldersDone.load(); }
 int Wiper::GetDirEntriesWiped() { return s_dirEntriesWiped.load(); }
 int Wiper::GetDirsUnresolved() { return s_dirsUnresolved.load(); }
+std::wstring Wiper::GetFirstUnresolvedDir() { return s_firstUnresolvedDir; }
 Wiper::FatWipeStatus Wiper::GetFatWipeStatus() { return s_fatWipeStatus; }
 
 // ---------------------------------------------------------------------------

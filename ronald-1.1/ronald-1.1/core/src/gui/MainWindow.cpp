@@ -826,7 +826,8 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
                 ranMsg += L"\n\n" + std::to_wstring(dirsUnresolved) +
                           L" folder(s) could not be located on the raw volume at all (path "
                           L"lookup failed) and were skipped - if the folder you expected "
-                          L"entries in is one of those, that's why nothing changed there.";
+                          L"entries in is one of those, that's why nothing changed there. "
+                          L"First one:\n" + hexcore::Wiper::GetFirstUnresolvedDir();
             }
             fatStatusLine = ranMsg.c_str();
             break;

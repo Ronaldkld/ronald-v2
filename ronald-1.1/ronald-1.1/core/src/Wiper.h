@@ -66,6 +66,10 @@ public:
     // genuinely having zero stale entries. Distinguishes "correctly
     // found nothing" from "silently couldn't even look".
     static int GetDirsUnresolved();
+    // Full path of the first folder that failed to resolve during the
+    // most recent WipeEditorTemps call (empty if none did), for
+    // diagnosing exactly what's going wrong rather than just a count.
+    static std::wstring GetFirstUnresolvedDir();
 
     // What happened with the raw FAT32 directory-entry pass during the
     // most recent WipeEditorTemps call.
@@ -135,6 +139,7 @@ private:
     static std::atomic<int>      s_tempsFoldersDone;
     static std::atomic<int>      s_dirEntriesWiped;
     static std::atomic<int>      s_dirsUnresolved;
+    static std::wstring          s_firstUnresolvedDir; // set once per WipeEditorTemps call
     static std::atomic<uint64_t> s_deadlineTick; // GetTickCount64() value to stop by; 0 = no deadline
     static FatWipeStatus         s_fatWipeStatus;
 };
