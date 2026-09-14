@@ -22,6 +22,7 @@
 // and rejection for anything else is the caller's responsibility.
 #pragma once
 #include <windows.h>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -113,10 +114,18 @@ public:
     // one folder the caller picked, not re-match a name at every level
     // for every folder in the tree). Skips "." and "..". Stops
     // descending (but keeps prior results) once `deadlineTick`
-    // (GetTickCount64() value, 0 = no deadline) has passed, or `maxDepth`
-    // is exhausted. Returns the total entries wiped across the whole
-    // subtree, or -1 on a hard error.
-    int WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlineTick = 0, int maxDepth = 64);
+    // (GetTickCount64() value, 0 = no deadline) has passed, `*cancelFlag`
+    // becomes true (checked the same way, 0 = not cancellable), or
+    // `maxDepth` is exhausted. Returns the total entries wiped across the
+    // whole subtree, or -1 on a hard error.
+    // `liveDirsVisited`/`liveEntriesWiped`, if given, are incremented as
+    // this progresses (in addition to the final LastDirsVisited() /
+    // return value available only once it's done) so a caller polling
+    // from another thread can show live progress during a long run.
+    int WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlineTick = 0,
+                                   const std::atomic<bool>* cancelFlag = nullptr, int maxDepth = 64,
+                                   std::atomic<int>* liveDirsVisited = nullptr,
+                                   std::atomic<int>* liveEntriesWiped = nullptr);
 
     // Stats from the most recent WipeStaleEntriesRecursive call: total
     // directories actually visited, and how many of those hit a hard

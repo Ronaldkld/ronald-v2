@@ -231,10 +231,16 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                                                nullptr, 0, &dummy, nullptr) != 0;
                 if (locked) {
                     s_fatWipeStatus = FatWipeStatus::Ran;
-                    int wiped = fatVol.WipeStaleEntriesRecursive(fatVol.Bpb().rootCluster,
-                                                                  s_deadlineTick.load());
-                    if (wiped > 0) s_dirEntriesWiped = wiped;
-                    s_dirsVisitedRaw = fatVol.LastDirsVisited();
+                    // No time deadline here (0): each stale entry now
+                    // costs a sector read + sector write against the raw
+                    // volume (see WriteBytesAt), which can take a while
+                    // over many entries on real, especially slow, drives
+                    // - correctness matters more than a fixed budget once
+                    // it's actually finding and fixing real entries. Only
+                    // the Cancel button (s_cancelRequested, checked via
+                    // cancelFlag) stops it early.
+                    fatVol.WipeStaleEntriesRecursive(fatVol.Bpb().rootCluster, 0, &s_cancelRequested,
+                                                      64, &s_dirsVisitedRaw, &s_dirEntriesWiped);
                     s_dirReadErrors = fatVol.LastDirReadErrors();
 
                     DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0,

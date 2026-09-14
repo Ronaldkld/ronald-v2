@@ -719,13 +719,13 @@ void MainWindow::CreateWipeProgressWindow(const std::wstring& initialLabel) {
     }
 
     m_hWipeProgress = CreateWindowExW(WS_EX_DLGMODALFRAME, kWipeProgressWndClass, L"Wipe In Progress",
-        WS_POPUP | WS_CAPTION, CW_USEDEFAULT, CW_USEDEFAULT, 360, 130,
+        WS_POPUP | WS_CAPTION, CW_USEDEFAULT, CW_USEDEFAULT, 380, 160,
         m_hwnd, nullptr, m_hInst, nullptr);
 
     m_hWipeProgressLabel = CreateWindowExW(0, L"STATIC", initialLabel.c_str(),
-        WS_CHILD | WS_VISIBLE, 12, 12, 336, 50, m_hWipeProgress, nullptr, m_hInst, nullptr);
+        WS_CHILD | WS_VISIBLE, 12, 12, 356, 80, m_hWipeProgress, nullptr, m_hInst, nullptr);
     CreateWindowExW(0, L"BUTTON", L"Cancel",
-        WS_CHILD | WS_VISIBLE, 130, 72, 100, 26, m_hWipeProgress,
+        WS_CHILD | WS_VISIBLE, 140, 100, 100, 26, m_hWipeProgress,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdWipeCancelButton)), m_hInst, nullptr);
 
     RECT parentRc{}; GetWindowRect(m_hwnd, &parentRc);
@@ -748,9 +748,12 @@ void MainWindow::OnWipeProgressTick() {
         swprintf(buf, 200, L"Wiping free space on %s...\n%lld MB written",
                  m_wipeVolumeRoot.c_str(), static_cast<long long>(mb));
     } else if (m_activeWipeKind == WipeKind::Temps) {
-        swprintf(buf, 200, L"Cleaning %s...\n%d folder(s) processed, %d temp file(s) wiped",
+        swprintf(buf, 200, L"Cleaning %s...\n%d folder(s) processed, %d temp file(s) wiped\n"
+                            L"FAT32 pass: %d director%s visited, %d entries wiped",
                  m_wipeVolumeRoot.c_str(), hexcore::Wiper::GetTempsFoldersDone(),
-                 hexcore::Wiper::GetTempsFilesWiped());
+                 hexcore::Wiper::GetTempsFilesWiped(), hexcore::Wiper::GetDirsVisitedRaw(),
+                 hexcore::Wiper::GetDirsVisitedRaw() == 1 ? L"y" : L"ies",
+                 hexcore::Wiper::GetDirEntriesWiped());
     } else {
         return;
     }

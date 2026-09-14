@@ -365,15 +365,23 @@ int FatVolume::WipeStaleEntries(uint32_t startCluster) {
     return wiped;
 }
 
-int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlineTick, int maxDepth) {
+int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlineTick,
+                                          const std::atomic<bool>* cancelFlag, int maxDepth,
+                                          std::atomic<int>* liveDirsVisited,
+                                          std::atomic<int>* liveEntriesWiped) {
     if (maxDepth <= 0) return 0;
     if (deadlineTick != 0 && GetTickCount64() >= deadlineTick) return 0;
+    if (cancelFlag && cancelFlag->load()) return 0;
 
     ++m_dirsVisited;
+    if (liveDirsVisited) liveDirsVisited->fetch_add(1);
+
     int total = WipeStaleEntries(startCluster);
     if (total < 0) {
         ++m_dirReadErrors;
         total = 0; // don't let one bad directory abort scanning its siblings
+    } else if (total > 0 && liveEntriesWiped) {
+        liveEntriesWiped->fetch_add(total);
     }
 
     for (const auto& entry : ListEntries(startCluster)) {
@@ -381,7 +389,8 @@ int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlin
         if (entry.name == L"." || entry.name == L"..") continue;
         if (entry.cluster < 2) continue;
 
-        int sub = WipeStaleEntriesRecursive(entry.cluster, deadlineTick, maxDepth - 1);
+        int sub = WipeStaleEntriesRecursive(entry.cluster, deadlineTick, cancelFlag, maxDepth - 1,
+                                             liveDirsVisited, liveEntriesWiped);
         if (sub > 0) total += sub;
     }
     return total;
