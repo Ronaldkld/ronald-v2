@@ -22,6 +22,7 @@ std::atomic<int>      Wiper::s_tempsFoldersDone{0};
 std::atomic<int>      Wiper::s_dirEntriesWiped{0};
 std::atomic<int>      Wiper::s_dirsVisitedRaw{0};
 std::atomic<int>      Wiper::s_dirReadErrors{0};
+std::atomic<int>      Wiper::s_subdirsFound{0};
 std::atomic<uint64_t> Wiper::s_deadlineTick{0};
 Wiper::FatWipeStatus  Wiper::s_fatWipeStatus{Wiper::FatWipeStatus::NotAttempted};
 
@@ -185,6 +186,7 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
     s_dirEntriesWiped = 0;
     s_dirsVisitedRaw = 0;
     s_dirReadErrors = 0;
+    s_subdirsFound = 0;
     s_fatWipeStatus = FatWipeStatus::NotAttempted;
 
     constexpr uint64_t kGlobalBudgetMs = 45000; // hard cap so a folder-heavy drive still finishes fast
@@ -242,6 +244,7 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                     fatVol.WipeStaleEntriesRecursive(fatVol.Bpb().rootCluster, 0, &s_cancelRequested,
                                                       64, &s_dirsVisitedRaw, &s_dirEntriesWiped);
                     s_dirReadErrors = fatVol.LastDirReadErrors();
+                    s_subdirsFound = fatVol.LastSubdirsFound();
 
                     DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0,
                                      nullptr, 0, &dummy, nullptr);
@@ -266,6 +269,7 @@ int Wiper::GetTempsFoldersDone() { return s_tempsFoldersDone.load(); }
 int Wiper::GetDirEntriesWiped() { return s_dirEntriesWiped.load(); }
 int Wiper::GetDirsVisitedRaw() { return s_dirsVisitedRaw.load(); }
 int Wiper::GetDirReadErrors() { return s_dirReadErrors.load(); }
+int Wiper::GetSubdirsFound() { return s_subdirsFound.load(); }
 Wiper::FatWipeStatus Wiper::GetFatWipeStatus() { return s_fatWipeStatus; }
 
 // ---------------------------------------------------------------------------

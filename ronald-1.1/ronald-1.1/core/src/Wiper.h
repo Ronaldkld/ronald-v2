@@ -64,6 +64,12 @@ public:
     // silently, rather than genuinely having zero stale entries).
     static int GetDirsVisitedRaw();
     static int GetDirReadErrors();
+    // Diagnostic: how many subdirectory entries the raw FAT32 pass found
+    // in total (see FatVolume::LastSubdirsFound). If this is bigger than
+    // GetDirsVisitedRaw(), the walk found more folders than it visited
+    // (something stopped it partway); if it matches, the scan itself
+    // never saw any more subfolders past what it visited.
+    static int GetSubdirsFound();
 
     // What happened with the raw FAT32 directory-entry pass during the
     // most recent WipeEditorTemps call.
@@ -132,6 +138,7 @@ private:
     static std::atomic<int>      s_dirEntriesWiped;
     static std::atomic<int>      s_dirsVisitedRaw;
     static std::atomic<int>      s_dirReadErrors;
+    static std::atomic<int>      s_subdirsFound;
     static std::atomic<uint64_t> s_deadlineTick; // GetTickCount64() value to stop by; 0 = no deadline
     static FatWipeStatus         s_fatWipeStatus;
 };

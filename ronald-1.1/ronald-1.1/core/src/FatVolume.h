@@ -134,6 +134,17 @@ public:
     // even read parts of the tree".
     int LastDirsVisited() const { return m_dirsVisited; }
     int LastDirReadErrors() const { return m_dirReadErrors; }
+    // How many subdirectory entries WipeStaleEntriesRecursive actually
+    // found (via ListEntries, isDirectory && cluster >= 2, excluding "."
+    // and "..") across the whole walk, counted the instant each is found -
+    // *before* the recursive call into it, so this stays accurate even if
+    // a deadline/cancel/maxDepth stops the walk from descending into all
+    // of them. Compared against LastDirsVisited(), this tells apart "found
+    // more subfolders than it ever visited" (something is stopping the
+    // walk from descending) from "never found any more subfolders to
+    // begin with" (the directory scan itself isn't seeing them as
+    // directories) - the two look identical from LastDirsVisited() alone.
+    int LastSubdirsFound() const { return m_subdirsFound; }
 
     const FatBpb& Bpb() const { return m_bpb; }
 
@@ -149,6 +160,7 @@ private:
     FatBpb m_bpb;
     int m_dirsVisited = 0;
     int m_dirReadErrors = 0;
+    int m_subdirsFound = 0;
 };
 
 } // namespace hexcore

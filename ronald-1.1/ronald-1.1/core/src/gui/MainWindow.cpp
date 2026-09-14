@@ -795,6 +795,7 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
     int dirEntriesWiped = hexcore::Wiper::GetDirEntriesWiped();
     int dirsVisitedRaw = hexcore::Wiper::GetDirsVisitedRaw();
     int dirReadErrors = hexcore::Wiper::GetDirReadErrors();
+    int subdirsFound = hexcore::Wiper::GetSubdirsFound();
     hexcore::Wiper::FatWipeStatus fatStatus = hexcore::Wiper::GetFatWipeStatus();
     m_activeWipeKind = WipeKind::None;
     EnableWindow(m_hwnd, TRUE);
@@ -821,12 +822,12 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
             break;
         case hexcore::Wiper::FatWipeStatus::Ran: {
             static std::wstring ranMsg;
-            wchar_t head[280];
-            swprintf(head, 280, L"\n\nAlso zeroed the name/size/date of %d deleted directory "
+            wchar_t head[360];
+            swprintf(head, 360, L"\n\nAlso zeroed the name/size/date of %d deleted directory "
                                  L"entry (or entries) directly on the FAT32 volume - the actual "
                                  L"listing a tool like FTK Imager reads. Visited %d director%s on "
-                                 L"the raw volume in total.",
-                     dirEntriesWiped, dirsVisitedRaw, dirsVisitedRaw == 1 ? L"y" : L"ies");
+                                 L"the raw volume in total (found %d subfolder(s) along the way).",
+                     dirEntriesWiped, dirsVisitedRaw, dirsVisitedRaw == 1 ? L"y" : L"ies", subdirsFound);
             ranMsg = head;
             if (dirReadErrors > 0) {
                 ranMsg += L"\n\n" + std::to_wstring(dirReadErrors) +

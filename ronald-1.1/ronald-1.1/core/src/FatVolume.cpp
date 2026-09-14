@@ -394,6 +394,7 @@ int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlin
         if (entry.name == L"." || entry.name == L"..") continue;
         if (entry.cluster < 2) continue;
 
+        ++m_subdirsFound;
         int sub = WipeStaleEntriesRecursive(entry.cluster, deadlineTick, cancelFlag, maxDepth - 1,
                                              liveDirsVisited, liveEntriesWiped);
         if (sub > 0) total += sub;
