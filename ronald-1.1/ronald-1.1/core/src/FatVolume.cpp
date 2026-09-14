@@ -585,6 +585,7 @@ std::wstring FatVolume::DumpDirectoryRaw(uint32_t startCluster, int maxEntries) 
 
     int count = 0;
     int clusterIdx = 0;
+    std::vector<RawEntry> pendingLfn;
     for (uint32_t cluster : WalkClusterChain(startCluster)) {
         std::vector<uint8_t> data = ReadCluster(cluster);
         if (data.empty()) {
@@ -600,9 +601,16 @@ std::wstring FatVolume::DumpDirectoryRaw(uint32_t startCluster, int maxEntries) 
             uint8_t firstByte = e[0];
             uint8_t attr = e[11];
 
-            wchar_t line[220];
+            wchar_t line[400];
             if (attr == 0x0F) {
-                swprintf(line, 220, L"c#%d(clu=%u) off=0x%04X first=0x%02X  LFN-fragment\r\n",
+                if (firstByte != 0xE5) {
+                    RawEntry copy;
+                    std::memcpy(copy.data(), e, kEntrySize);
+                    pendingLfn.push_back(copy);
+                } else {
+                    pendingLfn.clear();
+                }
+                swprintf(line, 400, L"c#%d(clu=%u) off=0x%04X first=0x%02X  LFN-fragment\r\n",
                          clusterIdx, cluster, static_cast<unsigned>(off), firstByte);
             } else {
                 uint16_t hi, lo;
@@ -610,10 +618,13 @@ std::wstring FatVolume::DumpDirectoryRaw(uint32_t startCluster, int maxEntries) 
                 std::memcpy(&lo, e + 26, 2);
                 uint32_t entCluster = (static_cast<uint32_t>(hi) << 16) | lo;
                 std::wstring shortName = ShortNameToString(e);
-                swprintf(line, 220,
-                         L"c#%d(clu=%u) off=0x%04X first=0x%02X attr=0x%02X dir=%s name=\"%s\" cluster=%u\r\n",
+                std::wstring longName = pendingLfn.empty() ? std::wstring() : AssembleLongName(pendingLfn);
+                pendingLfn.clear();
+                swprintf(line, 400,
+                         L"c#%d(clu=%u) off=0x%04X first=0x%02X attr=0x%02X dir=%s short=\"%s\" "
+                         L"long=\"%s\" cluster=%u\r\n",
                          clusterIdx, cluster, static_cast<unsigned>(off), firstByte, attr,
-                         (attr & 0x10) ? L"Y" : L"N", shortName.c_str(), entCluster);
+                         (attr & 0x10) ? L"Y" : L"N", shortName.c_str(), longName.c_str(), entCluster);
             }
             out += line;
         }
