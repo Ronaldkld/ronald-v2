@@ -51,6 +51,15 @@ struct FatDirEntry {
     uint32_t cluster = 0;
 };
 
+struct FatResolveResult {
+    uint32_t cluster = 0;          // final resolved cluster, or 0 if resolution failed partway
+    uint32_t lastGoodCluster = 0;  // the directory being searched when resolution failed
+                                    // (root cluster if the very first component failed);
+                                    // meaningless when cluster != 0 (fully resolved)
+    std::wstring failedComponent;  // the path component that couldn't be found; empty if
+                                    // fully resolved
+};
+
 class FatVolume {
 public:
     // Opens `volumePath` (a raw volume like L"\\\\.\\D:", or a plain
@@ -69,6 +78,12 @@ public:
     // entries so names with spaces/mixed case match. Returns the target
     // directory's first cluster, or 0 if any component wasn't found.
     uint32_t ResolveDirectoryCluster(const std::vector<std::wstring>& relativePathComponents);
+
+    // Same resolution, but on failure also reports exactly which
+    // component couldn't be found and the cluster of the directory being
+    // searched at that point - for diagnosing a failure rather than just
+    // detecting one.
+    FatResolveResult ResolveDirectoryClusterEx(const std::vector<std::wstring>& relativePathComponents);
 
     // Read-only: walks every cluster of the directory starting at
     // `startCluster` and counts stale vs. live entries. Never writes

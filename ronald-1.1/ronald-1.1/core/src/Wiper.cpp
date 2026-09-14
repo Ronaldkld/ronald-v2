@@ -253,21 +253,28 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                     for (const auto& visitedDir : visitedDirs) {
                         if (ShouldStop()) break;
                         std::vector<std::wstring> components = SplitRelativeToRoot(visitedDir, volumeRootPrefix);
-                        uint32_t cluster = fatVol.ResolveDirectoryCluster(components);
-                        if (cluster != 0) {
-                            int wiped = fatVol.WipeStaleEntries(cluster);
+                        FatResolveResult resolved = fatVol.ResolveDirectoryClusterEx(components);
+                        if (resolved.cluster != 0) {
+                            int wiped = fatVol.WipeStaleEntries(resolved.cluster);
                             if (wiped > 0) s_dirEntriesWiped = s_dirEntriesWiped.load() + wiped;
                         } else {
                             if (s_dirsUnresolved.load() == 0) {
                                 s_firstUnresolvedDir = visitedDir;
-                                std::vector<FatDirEntry> rootEntries = fatVol.ListEntries(fatVol.Bpb().rootCluster);
-                                std::wstring dump;
+                                // Dump the exact directory being searched when it
+                                // failed (not always the root) plus which name it
+                                // was looking for - shows directly whether the
+                                // expected name is even present there or spelled
+                                // differently from what this reader reconstructs.
+                                std::vector<FatDirEntry> entries = fatVol.ListEntries(resolved.lastGoodCluster);
+                                std::wstring dump = L"Looking for \"" + resolved.failedComponent +
+                                                     L"\" among:\n";
                                 int shown = 0;
-                                for (const auto& re : rootEntries) {
+                                for (const auto& re : entries) {
                                     if (shown >= 60) { dump += L"... (more)\n"; break; }
                                     dump += re.name + (re.isDirectory ? L" [DIR]\n" : L"\n");
                                     ++shown;
                                 }
+                                if (entries.empty()) dump += L"(nothing - empty or unreadable)\n";
                                 s_rootEntriesDump = dump;
                             }
                             s_dirsUnresolved = s_dirsUnresolved.load() + 1;

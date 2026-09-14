@@ -176,6 +176,10 @@ bool FatVolume::WriteBytesAt(uint64_t absoluteOffset, const uint8_t* data, size_
 }
 
 uint32_t FatVolume::ResolveDirectoryCluster(const std::vector<std::wstring>& relativePathComponents) {
+    return ResolveDirectoryClusterEx(relativePathComponents).cluster;
+}
+
+FatResolveResult FatVolume::ResolveDirectoryClusterEx(const std::vector<std::wstring>& relativePathComponents) {
     uint32_t currentCluster = m_bpb.rootCluster;
 
     for (const auto& wanted : relativePathComponents) {
@@ -185,7 +189,7 @@ uint32_t FatVolume::ResolveDirectoryCluster(const std::vector<std::wstring>& rel
 
         for (uint32_t cluster : WalkClusterChain(currentCluster)) {
             std::vector<uint8_t> data = ReadCluster(cluster);
-            if (data.empty()) return 0;
+            if (data.empty()) break;
             bool endOfDir = false;
 
             for (size_t off = 0; off + kEntrySize <= data.size(); off += kEntrySize) {
@@ -220,10 +224,19 @@ uint32_t FatVolume::ResolveDirectoryCluster(const std::vector<std::wstring>& rel
             if (endOfDir || foundCluster != 0) break;
         }
 
-        if (foundCluster == 0) return 0;
+        if (foundCluster == 0) {
+            FatResolveResult result;
+            result.cluster = 0;
+            result.lastGoodCluster = currentCluster;
+            result.failedComponent = wanted;
+            return result;
+        }
         currentCluster = foundCluster;
     }
-    return currentCluster;
+
+    FatResolveResult result;
+    result.cluster = currentCluster;
+    return result;
 }
 
 FatScanResult FatVolume::ScanDirectory(uint32_t startCluster) {
