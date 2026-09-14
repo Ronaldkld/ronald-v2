@@ -45,6 +45,12 @@ struct FatScanResult {
     bool ok = false;          // false if the path/volume couldn't be parsed at all
 };
 
+struct FatDirEntry {
+    std::wstring name;   // reconstructed long name if it had one, else the short name
+    bool isDirectory = false;
+    uint32_t cluster = 0;
+};
+
 class FatVolume {
 public:
     // Opens `volumePath` (a raw volume like L"\\\\.\\D:", or a plain
@@ -69,6 +75,13 @@ public:
     // anything - safe to run first to sanity-check what a real fix
     // would find before committing to one.
     FatScanResult ScanDirectory(uint32_t startCluster);
+
+    // Read-only: lists every LIVE (non-deleted) entry in the directory
+    // starting at `startCluster`, with the same long-name reconstruction
+    // ResolveDirectoryCluster uses for matching - a direct, inspectable
+    // view of exactly what this reader sees, to compare against what a
+    // tool like Explorer or FTK Imager shows for the same folder.
+    std::vector<FatDirEntry> ListEntries(uint32_t startCluster);
 
     // Overwrites every stale (deleted-marker) 32-byte slot found in the
     // directory starting at `startCluster` with zeros, leaving every

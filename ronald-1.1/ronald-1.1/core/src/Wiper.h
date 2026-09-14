@@ -70,6 +70,11 @@ public:
     // most recent WipeEditorTemps call (empty if none did), for
     // diagnosing exactly what's going wrong rather than just a count.
     static std::wstring GetFirstUnresolvedDir();
+    // A dump of what this reader sees directly at the volume's root
+    // directory (name + whether it's a folder), captured the first time
+    // any folder fails to resolve - for comparing directly against what
+    // Explorer/FTK Imager shows for the same drive.
+    static std::wstring GetRootEntriesDump();
 
     // What happened with the raw FAT32 directory-entry pass during the
     // most recent WipeEditorTemps call.
@@ -140,6 +145,7 @@ private:
     static std::atomic<int>      s_dirEntriesWiped;
     static std::atomic<int>      s_dirsUnresolved;
     static std::wstring          s_firstUnresolvedDir; // set once per WipeEditorTemps call
+    static std::wstring          s_rootEntriesDump;     // set once per WipeEditorTemps call
     static std::atomic<uint64_t> s_deadlineTick; // GetTickCount64() value to stop by; 0 = no deadline
     static FatWipeStatus         s_fatWipeStatus;
 };

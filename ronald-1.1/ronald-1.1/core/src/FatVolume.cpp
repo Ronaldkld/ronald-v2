@@ -250,6 +250,50 @@ FatScanResult FatVolume::ScanDirectory(uint32_t startCluster) {
     return result;
 }
 
+std::vector<FatDirEntry> FatVolume::ListEntries(uint32_t startCluster) {
+    std::vector<FatDirEntry> out;
+    if (startCluster < 2) return out;
+
+    std::vector<RawEntry> pendingLfn;
+
+    for (uint32_t cluster : WalkClusterChain(startCluster)) {
+        std::vector<uint8_t> data = ReadCluster(cluster);
+        if (data.empty()) break;
+        bool endOfDir = false;
+
+        for (size_t off = 0; off + kEntrySize <= data.size(); off += kEntrySize) {
+            const uint8_t* e = data.data() + off;
+            uint8_t firstByte = e[0];
+            if (firstByte == 0x00) { endOfDir = true; break; }
+            if (firstByte == 0xE5) { pendingLfn.clear(); continue; }
+
+            uint8_t attr = e[11];
+            if (attr == 0x0F) {
+                RawEntry copy;
+                std::memcpy(copy.data(), e, kEntrySize);
+                pendingLfn.push_back(copy);
+                continue;
+            }
+            if (attr & 0x08) { pendingLfn.clear(); continue; }
+
+            std::wstring longName = pendingLfn.empty() ? std::wstring() : AssembleLongName(pendingLfn);
+            std::wstring shortName = ShortNameToString(e);
+            pendingLfn.clear();
+
+            FatDirEntry entry;
+            entry.name = !longName.empty() ? longName : shortName;
+            entry.isDirectory = (attr & 0x10) != 0;
+            uint16_t hi, lo;
+            std::memcpy(&hi, e + 20, 2);
+            std::memcpy(&lo, e + 26, 2);
+            entry.cluster = (static_cast<uint32_t>(hi) << 16) | lo;
+            out.push_back(entry);
+        }
+        if (endOfDir) break;
+    }
+    return out;
+}
+
 int FatVolume::WipeStaleEntries(uint32_t startCluster) {
     if (startCluster < 2) return -1;
     int wiped = 0;
