@@ -339,6 +339,44 @@ std::vector<FatDirEntry> FatVolume::ListEntries(uint32_t startCluster) {
     return out;
 }
 
+bool FatVolume::IsClusterFree(uint32_t cluster) {
+    if (cluster < 2) return false;
+    uint64_t off = m_bpb.fatStartByte + static_cast<uint64_t>(cluster) * 4;
+    LARGE_INTEGER li; li.QuadPart = static_cast<LONGLONG>(off);
+    if (!SetFilePointerEx(m_handle, li, nullptr, FILE_BEGIN)) return false;
+    uint32_t value = 0;
+    DWORD read = 0;
+    if (!ReadFile(m_handle, &value, 4, &read, nullptr) || read != 4) return false;
+    return (value & kFatMask) == 0;
+}
+
+std::vector<uint32_t> FatVolume::FindDeletedSubdirClusters(uint32_t startCluster) {
+    std::vector<uint32_t> out;
+    if (startCluster < 2) return out;
+
+    for (uint32_t cluster : WalkClusterChain(startCluster)) {
+        std::vector<uint8_t> data = ReadCluster(cluster);
+        if (data.empty()) break;
+
+        for (size_t off = 0; off + kEntrySize <= data.size(); off += kEntrySize) {
+            const uint8_t* e = data.data() + off;
+            if (e[0] != 0xE5) continue;
+            uint8_t attr = e[11];
+            if (attr == 0x0F) continue;   // an LFN fragment, not a real entry
+            if (!(attr & 0x10)) continue; // only a deleted DIRECTORY pointer is of interest here
+            if (attr & 0x08) continue;    // volume label
+
+            uint16_t hi, lo;
+            std::memcpy(&hi, e + 20, 2);
+            std::memcpy(&lo, e + 26, 2);
+            uint32_t subCluster = (static_cast<uint32_t>(hi) << 16) | lo;
+            if (subCluster < 2 || subCluster == startCluster) continue;
+            out.push_back(subCluster);
+        }
+    }
+    return out;
+}
+
 int FatVolume::WipeStaleEntries(uint32_t startCluster) {
     if (startCluster < 2) return -1;
     int wiped = 0;
@@ -381,6 +419,13 @@ int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlin
     ++m_dirsVisited;
     if (liveDirsVisited) liveDirsVisited->fetch_add(1);
 
+    // Must run BEFORE WipeStaleEntries: a subfolder that was deleted as a
+    // whole (not just emptied out) only shows up as a 0xE5 entry here,
+    // and wiping that entry's tail destroys its cluster pointer along
+    // with its name - this is the only chance to learn where its content
+    // actually lives before that happens.
+    std::vector<uint32_t> deletedSubdirs = FindDeletedSubdirClusters(startCluster);
+
     int total = WipeStaleEntries(startCluster);
     if (total < 0) {
         ++m_dirReadErrors;
@@ -396,6 +441,22 @@ int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlin
 
         ++m_subdirsFound;
         int sub = WipeStaleEntriesRecursive(entry.cluster, deadlineTick, cancelFlag, maxDepth - 1,
+                                             liveDirsVisited, liveEntriesWiped);
+        if (sub > 0) total += sub;
+    }
+
+    // A folder that was deleted whole - "ilovepdf_extracted-pages",
+    // say - still shows up in FTK Imager with its own contents
+    // browsable as long as its cluster(s) haven't been reused for
+    // something else since. Only descend when IsClusterFree confirms
+    // that: a non-zero FAT entry means the cluster now belongs to some
+    // other, live chain, and treating its bytes as directory entries -
+    // let alone zeroing whatever looks like a stale slot inside it -
+    // would corrupt that live data instead of truly-deleted data.
+    for (uint32_t cluster : deletedSubdirs) {
+        if (!IsClusterFree(cluster)) continue;
+        ++m_subdirsFound;
+        int sub = WipeStaleEntriesRecursive(cluster, deadlineTick, cancelFlag, maxDepth - 1,
                                              liveDirsVisited, liveEntriesWiped);
         if (sub > 0) total += sub;
     }

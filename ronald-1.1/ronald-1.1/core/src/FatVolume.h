@@ -146,6 +146,30 @@ public:
     // directories) - the two look identical from LastDirsVisited() alone.
     int LastSubdirsFound() const { return m_subdirsFound; }
 
+    // Read-only: entries in the directory at `startCluster` that are
+    // themselves marked deleted (0xE5) but still carry ATTR_DIRECTORY and
+    // a cluster pointer - a whole subfolder that was deleted, not just a
+    // file inside one. A tool like FTK Imager can still browse into one
+    // of these and list what's inside as long as its own cluster hasn't
+    // been reused since - which WipeStaleEntriesRecursive alone could
+    // never reach: ListEntries (what it recurses through) skips every
+    // 0xE5 entry on purpose, and WipeStaleEntries's own zeroing pass
+    // destroys a wiped entry's cluster pointer along with its name - so
+    // any cluster to recurse into here has to be collected BEFORE that
+    // directory gets wiped, not after.
+    std::vector<uint32_t> FindDeletedSubdirClusters(uint32_t startCluster);
+
+    // True if `cluster`'s own FAT entry reads back exactly 0 (free, not
+    // chained to anything) - the state a FAT32 driver leaves a cluster in
+    // when it frees a deleted file or folder's chain. A deleted
+    // subdirectory candidate from FindDeletedSubdirClusters is only ever
+    // recursed into when this holds: a non-zero entry means the cluster
+    // is currently part of some OTHER, live chain now, and reading it as
+    // directory entries - worse, writing zeros into whatever inside it
+    // happens to look like a stale (0xE5) slot - would corrupt that live
+    // file's or folder's actual data instead of a truly-deleted one.
+    bool IsClusterFree(uint32_t cluster);
+
     const FatBpb& Bpb() const { return m_bpb; }
 
 private:
