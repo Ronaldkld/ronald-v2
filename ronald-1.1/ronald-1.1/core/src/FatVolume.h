@@ -118,6 +118,14 @@ public:
     // subtree, or -1 on a hard error.
     int WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlineTick = 0, int maxDepth = 64);
 
+    // Stats from the most recent WipeStaleEntriesRecursive call: total
+    // directories actually visited, and how many of those hit a hard
+    // read error (and so were silently skipped rather than scanned) -
+    // distinguishes "scanned everything, found nothing" from "couldn't
+    // even read parts of the tree".
+    int LastDirsVisited() const { return m_dirsVisited; }
+    int LastDirReadErrors() const { return m_dirReadErrors; }
+
     const FatBpb& Bpb() const { return m_bpb; }
 
 private:
@@ -130,6 +138,8 @@ private:
 
     HANDLE m_handle = INVALID_HANDLE_VALUE;
     FatBpb m_bpb;
+    int m_dirsVisited = 0;
+    int m_dirReadErrors = 0;
 };
 
 } // namespace hexcore

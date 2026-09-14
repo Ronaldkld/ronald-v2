@@ -344,8 +344,12 @@ int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlin
     if (maxDepth <= 0) return 0;
     if (deadlineTick != 0 && GetTickCount64() >= deadlineTick) return 0;
 
+    ++m_dirsVisited;
     int total = WipeStaleEntries(startCluster);
-    if (total < 0) return total;
+    if (total < 0) {
+        ++m_dirReadErrors;
+        total = 0; // don't let one bad directory abort scanning its siblings
+    }
 
     for (const auto& entry : ListEntries(startCluster)) {
         if (!entry.isDirectory) continue;

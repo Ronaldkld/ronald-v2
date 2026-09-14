@@ -790,7 +790,8 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
     }
     int foldersDone = hexcore::Wiper::GetTempsFoldersDone();
     int dirEntriesWiped = hexcore::Wiper::GetDirEntriesWiped();
-    int dirsUnresolved = hexcore::Wiper::GetDirsUnresolved();
+    int dirsVisitedRaw = hexcore::Wiper::GetDirsVisitedRaw();
+    int dirReadErrors = hexcore::Wiper::GetDirReadErrors();
     hexcore::Wiper::FatWipeStatus fatStatus = hexcore::Wiper::GetFatWipeStatus();
     m_activeWipeKind = WipeKind::None;
     EnableWindow(m_hwnd, TRUE);
@@ -817,18 +818,18 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
             break;
         case hexcore::Wiper::FatWipeStatus::Ran: {
             static std::wstring ranMsg;
-            wchar_t head[200];
-            swprintf(head, 200, L"\n\nAlso zeroed the name/size/date of %d deleted directory "
+            wchar_t head[280];
+            swprintf(head, 280, L"\n\nAlso zeroed the name/size/date of %d deleted directory "
                                  L"entry (or entries) directly on the FAT32 volume - the actual "
-                                 L"listing a tool like FTK Imager reads.", dirEntriesWiped);
+                                 L"listing a tool like FTK Imager reads. Visited %d director%s on "
+                                 L"the raw volume in total.",
+                     dirEntriesWiped, dirsVisitedRaw, dirsVisitedRaw == 1 ? L"y" : L"ies");
             ranMsg = head;
-            if (dirsUnresolved > 0) {
-                ranMsg += L"\n\n" + std::to_wstring(dirsUnresolved) +
-                          L" folder(s) could not be located on the raw volume at all (path "
-                          L"lookup failed) and were skipped - if the folder you expected "
-                          L"entries in is one of those, that's why nothing changed there. "
-                          L"First one:\n" + hexcore::Wiper::GetFirstUnresolvedDir() +
-                          L"\n\n" + hexcore::Wiper::GetRootEntriesDump();
+            if (dirReadErrors > 0) {
+                ranMsg += L"\n\n" + std::to_wstring(dirReadErrors) +
+                          L" of those directories hit a read error partway through and were "
+                          L"skipped rather than fully scanned - if the folder you expected "
+                          L"entries in is one of those, that's why nothing changed there.";
             }
             fatStatusLine = ranMsg.c_str();
             break;
