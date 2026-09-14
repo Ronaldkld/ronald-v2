@@ -601,7 +601,27 @@ std::wstring FatVolume::DumpDirectoryRaw(uint32_t startCluster, int maxEntries) 
             uint8_t firstByte = e[0];
             uint8_t attr = e[11];
 
-            wchar_t line[400];
+            // Full raw hex of the 32-byte slot - the interpreted fields
+            // below are only as good as the parsing logic that produces
+            // them, so this is what lets a real discrepancy (a name that
+            // reconstructs to one character when it plainly shouldn't)
+            // be diagnosed against the actual bytes rather than trusted
+            // blindly. Built character-by-character into a std::wstring
+            // rather than via a formatted-into-fixed-buffer loop, which
+            // was producing a stray embedded NUL a few characters in on
+            // this toolchain for reasons not worth chasing further -
+            // this sidesteps that whole class of bug.
+            static const wchar_t kHexDigits[] = L"0123456789ABCDEF";
+            std::wstring hexStr;
+            hexStr.reserve(kEntrySize * 3);
+            for (size_t i = 0; i < kEntrySize; ++i) {
+                hexStr.push_back(kHexDigits[(e[i] >> 4) & 0xF]);
+                hexStr.push_back(kHexDigits[e[i] & 0xF]);
+                hexStr.push_back(L' ');
+            }
+            const wchar_t* hex = hexStr.c_str();
+
+            wchar_t line[500];
             if (attr == 0x0F) {
                 if (firstByte != 0xE5) {
                     RawEntry copy;
@@ -610,8 +630,8 @@ std::wstring FatVolume::DumpDirectoryRaw(uint32_t startCluster, int maxEntries) 
                 } else {
                     pendingLfn.clear();
                 }
-                swprintf(line, 400, L"c#%d(clu=%u) off=0x%04X first=0x%02X  LFN-fragment\r\n",
-                         clusterIdx, cluster, static_cast<unsigned>(off), firstByte);
+                swprintf(line, 500, L"c#%d(clu=%u) off=0x%04X first=0x%02X  LFN-fragment  hex=%ls\r\n",
+                         clusterIdx, cluster, static_cast<unsigned>(off), firstByte, hex);
             } else {
                 uint16_t hi, lo;
                 std::memcpy(&hi, e + 20, 2);
@@ -620,11 +640,11 @@ std::wstring FatVolume::DumpDirectoryRaw(uint32_t startCluster, int maxEntries) 
                 std::wstring shortName = ShortNameToString(e);
                 std::wstring longName = pendingLfn.empty() ? std::wstring() : AssembleLongName(pendingLfn);
                 pendingLfn.clear();
-                swprintf(line, 400,
-                         L"c#%d(clu=%u) off=0x%04X first=0x%02X attr=0x%02X dir=%s short=\"%s\" "
-                         L"long=\"%s\" cluster=%u\r\n",
+                swprintf(line, 500,
+                         L"c#%d(clu=%u) off=0x%04X first=0x%02X attr=0x%02X dir=%ls short=\"%ls\" "
+                         L"long=\"%ls\" cluster=%u  hex=%ls\r\n",
                          clusterIdx, cluster, static_cast<unsigned>(off), firstByte, attr,
-                         (attr & 0x10) ? L"Y" : L"N", shortName.c_str(), longName.c_str(), entCluster);
+                         (attr & 0x10) ? L"Y" : L"N", shortName.c_str(), longName.c_str(), entCluster, hex);
             }
             out += line;
         }
@@ -633,7 +653,7 @@ std::wstring FatVolume::DumpDirectoryRaw(uint32_t startCluster, int maxEntries) 
     }
 
     wchar_t summary[160];
-    swprintf(summary, 160, L"\r\n--- total clusters in chain: %d, entries listed: %d%s ---\r\n",
+    swprintf(summary, 160, L"\r\n--- total clusters in chain: %d, entries listed: %d%ls ---\r\n",
              clusterIdx, count, count >= maxEntries ? L" (hit the cap)" : L"");
     out += summary;
     return out;

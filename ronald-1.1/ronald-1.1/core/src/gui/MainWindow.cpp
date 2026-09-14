@@ -791,11 +791,11 @@ void MainWindow::OnWipeProgressTick() {
     wchar_t buf[400];
     if (m_activeWipeKind == WipeKind::FreeSpace) {
         int64_t mb = hexcore::Wiper::GetBytesWrittenSoFar() / (1024 * 1024);
-        swprintf(buf, 400, L"Wiping free space on %s...\n%lld MB written",
+        swprintf(buf, 400, L"Wiping free space on %ls...\n%lld MB written",
                  m_wipeVolumeRoot.c_str(), static_cast<long long>(mb));
     } else if (m_activeWipeKind == WipeKind::Temps) {
-        int len = swprintf(buf, 400, L"Cleaning %s...\n%d folder(s) processed, %d temp file(s) wiped\n"
-                            L"FAT32 pass: %d director%s visited, %d entries wiped",
+        int len = swprintf(buf, 400, L"Cleaning %ls...\n%d folder(s) processed, %d temp file(s) wiped\n"
+                            L"FAT32 pass: %d director%ls visited, %d entries wiped",
                  m_wipeVolumeRoot.c_str(), hexcore::Wiper::GetTempsFoldersDone(),
                  hexcore::Wiper::GetTempsFilesWiped(), hexcore::Wiper::GetDirsVisitedRaw(),
                  hexcore::Wiper::GetDirsVisitedRaw() == 1 ? L"y" : L"ies",
@@ -833,10 +833,10 @@ void MainWindow::OnWipeFreeSpaceDone(int64_t written) {
 
     wchar_t buf[256];
     if (written < 0) {
-        swprintf(buf, 256, L"Could not wipe free space on %s.", m_wipeVolumeRoot.c_str());
+        swprintf(buf, 256, L"Could not wipe free space on %ls.", m_wipeVolumeRoot.c_str());
         MessageBoxW(m_hwnd, buf, L"Wipe Free Space", MB_OK | MB_ICONERROR);
     } else {
-        swprintf(buf, 256, L"Wiped %.1f MB of free space on %s.",
+        swprintf(buf, 256, L"Wiped %.1f MB of free space on %ls.",
                  written / (1024.0 * 1024.0), m_wipeVolumeRoot.c_str());
         MessageBoxW(m_hwnd, buf, L"Wipe Free Space", MB_OK | MB_ICONINFORMATION);
     }
