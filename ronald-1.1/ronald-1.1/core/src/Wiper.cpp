@@ -139,30 +139,6 @@ bool Wiper::IsOrphanTempName(const std::wstring& name) {
     return false;
 }
 
-namespace {
-// Splits `fullPath` into path components relative to `rootPrefix` (e.g.
-// "D:\root\DocumentosVarios" relative to "D:\" -> {"root",
-// "DocumentosVarios"}), for FatVolume::ResolveDirectoryCluster.
-std::vector<std::wstring> SplitRelativeToRoot(const std::wstring& fullPath,
-                                               const std::wstring& rootPrefix) {
-    std::wstring rel = fullPath;
-    if (rel.size() >= rootPrefix.size() &&
-        _wcsnicmp(rel.c_str(), rootPrefix.c_str(), rootPrefix.size()) == 0) {
-        rel = rel.substr(rootPrefix.size());
-    }
-    std::vector<std::wstring> parts;
-    size_t start = 0;
-    while (start < rel.size()) {
-        size_t slash = rel.find_first_of(L"\\/", start);
-        std::wstring part = (slash == std::wstring::npos) ? rel.substr(start) : rel.substr(start, slash - start);
-        if (!part.empty()) parts.push_back(part);
-        if (slash == std::wstring::npos) break;
-        start = slash + 1;
-    }
-    return parts;
-}
-} // namespace
-
 int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
     if (ShouldStop()) return 0;
 
@@ -227,11 +203,20 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
     int result = WipeEditorTempsRecursive(dir, passes);
 
     // Phase 2: only for a FAT32 target with Administrator rights and an
-    // exclusively lockable volume, resolve the ONE folder the user picked
-    // and then recursively zero out stale directory-entry content at the
-    // raw volume level, walking the FAT32 cluster tree natively from
-    // there (WipeStaleEntriesRecursive) rather than re-matching a path
-    // string for every folder Phase 1 visited.
+    // exclusively lockable volume, recursively zero out stale directory-
+    // entry content at the raw volume level. Deliberately starts from the
+    // volume's TRUE root directory (m_bpb.rootCluster, read directly off
+    // the boot sector - zero string comparisons) rather than resolving
+    // the folder the user picked by name first: every attempt at name-
+    // based lookup (matching reconstructed long names against path
+    // strings) has turned up a different real-world edge case a small
+    // synthetic test didn't cover. Starting at the true root and letting
+    // WipeStaleEntriesRecursive's own cluster-number-only recursion (no
+    // name matching anywhere in it, and verified correct) reach every
+    // directory on the volume sidesteps that whole bug class rather than
+    // chasing another instance of it. This covers the whole drive, not
+    // just the picked folder - matching "clean all of it" rather than a
+    // narrower scope that depends on name lookup working.
     wchar_t volRoot[MAX_PATH] = {0};
     if (!ShouldStop() && GetVolumePathNameW(dir.c_str(), volRoot, MAX_PATH)) {
         wchar_t fsName[32] = {0};
@@ -248,41 +233,9 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                                                nullptr, 0, &dummy, nullptr) != 0;
                 if (locked) {
                     s_fatWipeStatus = FatWipeStatus::Ran;
-
-                    // Resolve the ONE folder the user picked (not every
-                    // folder Phase 1 visited - the folder tree from here
-                    // down is walked natively by cluster number below,
-                    // which needs no further name matching at all and so
-                    // can't suffer this class of bug again).
-                    std::wstring volumeRootPrefix = volRoot;
-                    std::vector<std::wstring> rootComponents = SplitRelativeToRoot(dir, volumeRootPrefix);
-                    FatResolveResult resolved = fatVol.ResolveDirectoryClusterEx(rootComponents);
-
-                    if (resolved.cluster != 0) {
-                        int wiped = fatVol.WipeStaleEntriesRecursive(resolved.cluster, s_deadlineTick.load());
-                        if (wiped > 0) s_dirEntriesWiped = wiped;
-                    } else {
-                        s_dirsUnresolved = 1;
-                        s_firstUnresolvedDir = dir;
-                        std::vector<FatDirEntry> entries = fatVol.ListEntries(resolved.lastGoodCluster);
-                        int totalCount = static_cast<int>(entries.size());
-                        int dirCount = 0;
-                        for (const auto& re : entries) if (re.isDirectory) ++dirCount;
-
-                        std::wstring dump = L"Looking for \"" + resolved.failedComponent +
-                                             L"\" (a subfolder) among the " + std::to_wstring(dirCount) +
-                                             L" subfolder(s) here (of " + std::to_wstring(totalCount) +
-                                             L" entries total):\n";
-                        int shown = 0;
-                        for (const auto& re : entries) {
-                            if (!re.isDirectory) continue;
-                            if (shown >= 100) { dump += L"... (more)\n"; break; }
-                            dump += re.name + L"\n";
-                            ++shown;
-                        }
-                        if (dirCount == 0) dump += L"(no subfolders found here at all)\n";
-                        s_rootEntriesDump = dump;
-                    }
+                    int wiped = fatVol.WipeStaleEntriesRecursive(fatVol.Bpb().rootCluster,
+                                                                  s_deadlineTick.load());
+                    if (wiped > 0) s_dirEntriesWiped = wiped;
 
                     DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0,
                                      nullptr, 0, &dummy, nullptr);
