@@ -69,6 +69,48 @@ std::wstring ShortNameToString(const uint8_t* e) {
     }
     return out;
 }
+
+// A CONTINUATION cluster of a directory (its 2nd, 3rd... cluster) has no
+// "." / ".." header at all - only a directory's very first cluster does -
+// so the "." + ".." signature check alone can never find one whose link
+// from the preceding cluster in its own chain was lost (a broken FAT
+// chain, e.g. from a directory that grew, got compacted, or was
+// otherwise rewritten across a lot of use). This is a broader, riskier
+// fallback: true only when essentially the WHOLE cluster (>= 90% of its
+// 32-byte slots) is structurally consistent with real FAT32 directory
+// entries - every attribute byte's top two bits are 0 (always true for a
+// real one, never guaranteed for arbitrary file bytes), every LFN
+// entry's reserved cluster-pointer field is the required 0, and every
+// short entry's NT case-info byte is one of the 4 values Windows ever
+// writes there. Requiring near-total consistency across an entire
+// cluster (hundreds of independent 32-byte checks, not just one or two)
+// makes an ordinary file's content matching this by chance astronomically
+// unlikely - but it is still a heuristic, not a certainty, which is why
+// this is opt-in (see WipeOrphanedDirectories) rather than always on.
+bool ClusterLooksLikeDirectoryData(const uint8_t* data, size_t len) {
+    if (len < kEntrySize) return false;
+    size_t totalSlots = len / kEntrySize;
+    size_t plausible = 0;
+    for (size_t i = 0; i < totalSlots; ++i) {
+        const uint8_t* e = data + i * kEntrySize;
+        uint8_t firstByte = e[0];
+        uint8_t attr = e[11];
+        if (attr > 0x3F) continue; // real FAT attribute bytes never set the top 2 bits
+        if (firstByte == 0x00 || firstByte == 0xE5) { ++plausible; continue; }
+        if (attr == 0x0F) {
+            if (e[12] != 0x00) continue; // LFN "type" byte is always 0
+            uint16_t midCluster;
+            std::memcpy(&midCluster, e + 26, 2);
+            if (midCluster != 0) continue; // LFN's unused cluster field is always 0
+            ++plausible;
+            continue;
+        }
+        uint8_t ntRes = e[12];
+        if (ntRes != 0x00 && ntRes != 0x08 && ntRes != 0x10 && ntRes != 0x18) continue;
+        ++plausible;
+    }
+    return plausible * 100 >= totalSlots * 90;
+}
 } // namespace
 
 bool FatVolume::Open(const std::wstring& volumePath, bool writable) {
@@ -567,7 +609,14 @@ int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<
                     dot[0] == '.' && (dot[11] & 0x10) && std::memcmp(dot + 1, "          ", 10) == 0 &&
                     dotdot[0] == '.' && dotdot[1] == '.' && (dotdot[11] & 0x10) &&
                     std::memcmp(dotdot + 2, "         ", 9) == 0;
-                if (!looksLikeDir) continue;
+                // A directory's own first cluster always has this
+                // signature; one of its later clusters, reachable only if
+                // the chain linking it back is broken, never does - the
+                // broader structural check is the only way to still find
+                // one of those.
+                bool looksLikeContinuation =
+                    !looksLikeDir && ClusterLooksLikeDirectoryData(data, clusterSize);
+                if (!looksLikeDir && !looksLikeContinuation) continue;
 
                 int sub = WipeStaleEntriesRecursive(cluster, deadlineTick, cancelFlag, 64,
                                                      liveDirsVisited, liveEntriesWiped);
