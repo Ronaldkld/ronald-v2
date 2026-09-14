@@ -23,6 +23,8 @@ std::atomic<int>      Wiper::s_dirEntriesWiped{0};
 std::atomic<int>      Wiper::s_dirsVisitedRaw{0};
 std::atomic<int>      Wiper::s_dirReadErrors{0};
 std::atomic<int>      Wiper::s_subdirsFound{0};
+std::atomic<int64_t>  Wiper::s_orphanClustersScanned{0};
+std::atomic<int64_t>  Wiper::s_orphanTotalClusters{0};
 std::atomic<uint64_t> Wiper::s_deadlineTick{0};
 Wiper::FatWipeStatus  Wiper::s_fatWipeStatus{Wiper::FatWipeStatus::NotAttempted};
 
@@ -187,6 +189,8 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
     s_dirsVisitedRaw = 0;
     s_dirReadErrors = 0;
     s_subdirsFound = 0;
+    s_orphanClustersScanned = 0;
+    s_orphanTotalClusters = 0;
     s_fatWipeStatus = FatWipeStatus::NotAttempted;
 
     constexpr uint64_t kGlobalBudgetMs = 45000; // hard cap so a folder-heavy drive still finishes fast
@@ -256,8 +260,9 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                     // own signature instead of following pointers -
                     // same idea here.
                     if (!s_cancelRequested.load()) {
+                        s_orphanTotalClusters = fatVol.Bpb().totalDataClusters;
                         fatVol.WipeOrphanedDirectories(0, &s_cancelRequested, &s_dirsVisitedRaw,
-                                                        &s_dirEntriesWiped);
+                                                        &s_dirEntriesWiped, &s_orphanClustersScanned);
                     }
 
                     DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0,
@@ -284,6 +289,8 @@ int Wiper::GetDirEntriesWiped() { return s_dirEntriesWiped.load(); }
 int Wiper::GetDirsVisitedRaw() { return s_dirsVisitedRaw.load(); }
 int Wiper::GetDirReadErrors() { return s_dirReadErrors.load(); }
 int Wiper::GetSubdirsFound() { return s_subdirsFound.load(); }
+int64_t Wiper::GetOrphanClustersScanned() { return s_orphanClustersScanned.load(); }
+int64_t Wiper::GetOrphanTotalClusters() { return s_orphanTotalClusters.load(); }
 Wiper::FatWipeStatus Wiper::GetFatWipeStatus() { return s_fatWipeStatus; }
 
 // ---------------------------------------------------------------------------

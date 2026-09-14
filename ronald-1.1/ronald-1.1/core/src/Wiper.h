@@ -70,6 +70,13 @@ public:
     // (something stopped it partway); if it matches, the scan itself
     // never saw any more subfolders past what it visited.
     static int GetSubdirsFound();
+    // Live progress for the full-volume orphan-directory sweep (the
+    // slowest phase, since it has to touch every free cluster at least
+    // once): clusters scanned so far vs. the volume's total data
+    // clusters, so a caller can show a real percentage instead of this
+    // phase looking stalled. Both are 0 before/without that phase.
+    static int64_t GetOrphanClustersScanned();
+    static int64_t GetOrphanTotalClusters();
 
     // What happened with the raw FAT32 directory-entry pass during the
     // most recent WipeEditorTemps call.
@@ -139,6 +146,8 @@ private:
     static std::atomic<int>      s_dirsVisitedRaw;
     static std::atomic<int>      s_dirReadErrors;
     static std::atomic<int>      s_subdirsFound;
+    static std::atomic<int64_t>  s_orphanClustersScanned;
+    static std::atomic<int64_t>  s_orphanTotalClusters;
     static std::atomic<uint64_t> s_deadlineTick; // GetTickCount64() value to stop by; 0 = no deadline
     static FatWipeStatus         s_fatWipeStatus;
 };

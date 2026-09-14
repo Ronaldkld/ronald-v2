@@ -719,13 +719,13 @@ void MainWindow::CreateWipeProgressWindow(const std::wstring& initialLabel) {
     }
 
     m_hWipeProgress = CreateWindowExW(WS_EX_DLGMODALFRAME, kWipeProgressWndClass, L"Wipe In Progress",
-        WS_POPUP | WS_CAPTION, CW_USEDEFAULT, CW_USEDEFAULT, 380, 160,
+        WS_POPUP | WS_CAPTION, CW_USEDEFAULT, CW_USEDEFAULT, 380, 195,
         m_hwnd, nullptr, m_hInst, nullptr);
 
     m_hWipeProgressLabel = CreateWindowExW(0, L"STATIC", initialLabel.c_str(),
-        WS_CHILD | WS_VISIBLE, 12, 12, 356, 80, m_hWipeProgress, nullptr, m_hInst, nullptr);
+        WS_CHILD | WS_VISIBLE, 12, 12, 356, 115, m_hWipeProgress, nullptr, m_hInst, nullptr);
     CreateWindowExW(0, L"BUTTON", L"Cancel",
-        WS_CHILD | WS_VISIBLE, 140, 100, 100, 26, m_hWipeProgress,
+        WS_CHILD | WS_VISIBLE, 140, 135, 100, 26, m_hWipeProgress,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdWipeCancelButton)), m_hInst, nullptr);
 
     RECT parentRc{}; GetWindowRect(m_hwnd, &parentRc);
@@ -742,18 +742,31 @@ void MainWindow::CreateWipeProgressWindow(const std::wstring& initialLabel) {
 
 void MainWindow::OnWipeProgressTick() {
     if (!m_hWipeProgressLabel) return;
-    wchar_t buf[200];
+    wchar_t buf[400];
     if (m_activeWipeKind == WipeKind::FreeSpace) {
         int64_t mb = hexcore::Wiper::GetBytesWrittenSoFar() / (1024 * 1024);
-        swprintf(buf, 200, L"Wiping free space on %s...\n%lld MB written",
+        swprintf(buf, 400, L"Wiping free space on %s...\n%lld MB written",
                  m_wipeVolumeRoot.c_str(), static_cast<long long>(mb));
     } else if (m_activeWipeKind == WipeKind::Temps) {
-        swprintf(buf, 200, L"Cleaning %s...\n%d folder(s) processed, %d temp file(s) wiped\n"
+        int len = swprintf(buf, 400, L"Cleaning %s...\n%d folder(s) processed, %d temp file(s) wiped\n"
                             L"FAT32 pass: %d director%s visited, %d entries wiped",
                  m_wipeVolumeRoot.c_str(), hexcore::Wiper::GetTempsFoldersDone(),
                  hexcore::Wiper::GetTempsFilesWiped(), hexcore::Wiper::GetDirsVisitedRaw(),
                  hexcore::Wiper::GetDirsVisitedRaw() == 1 ? L"y" : L"ies",
                  hexcore::Wiper::GetDirEntriesWiped());
+        // The orphan-directory sweep (Phase 3) has to touch every free
+        // cluster on the volume at least once, which can take a while on
+        // a large, mostly-empty drive - show it as its own line with a
+        // real percentage so it never looks stalled the way it did
+        // before this counter existed.
+        int64_t orphanTotal = hexcore::Wiper::GetOrphanTotalClusters();
+        if (len > 0 && orphanTotal > 0) {
+            int64_t orphanScanned = hexcore::Wiper::GetOrphanClustersScanned();
+            double pct = orphanTotal > 0 ? (100.0 * orphanScanned / orphanTotal) : 0.0;
+            if (pct > 100.0) pct = 100.0;
+            swprintf(buf + len, 400 - len, L"\nOrphan folder scan: %.0f%% of free space checked",
+                     pct);
+        }
     } else {
         return;
     }
@@ -834,6 +847,24 @@ void MainWindow::OnWipeTempsDone(int filesWiped) {
                           L" of those directories hit a read error partway through and were "
                           L"skipped rather than fully scanned - if the folder you expected "
                           L"entries in is one of those, that's why nothing changed there.";
+            }
+            {
+                int64_t orphanTotal = hexcore::Wiper::GetOrphanTotalClusters();
+                int64_t orphanScanned = hexcore::Wiper::GetOrphanClustersScanned();
+                if (orphanTotal > 0) {
+                    bool complete = orphanScanned >= orphanTotal;
+                    double pct = 100.0 * orphanScanned / orphanTotal;
+                    if (pct > 100.0) pct = 100.0;
+                    wchar_t orphanLine[220];
+                    swprintf(orphanLine, 220,
+                             L"\n\nOrphan folder scan (finds a folder that was deleted whole, with "
+                             L"nothing left pointing to it): %s, %.0f%% of the volume's free space "
+                             L"checked.",
+                             complete ? L"completed" : L"stopped early (Cancel was pressed, or it ran "
+                                                        L"out of time)",
+                             pct);
+                    ranMsg += orphanLine;
+                }
             }
             fatStatusLine = ranMsg.c_str();
             break;

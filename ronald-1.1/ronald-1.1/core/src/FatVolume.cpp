@@ -1,5 +1,6 @@
 #include "FatVolume.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <cwctype>
@@ -474,7 +475,8 @@ int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlin
 
 int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<bool>* cancelFlag,
                                         std::atomic<int>* liveDirsVisited,
-                                        std::atomic<int>* liveEntriesWiped) {
+                                        std::atomic<int>* liveEntriesWiped,
+                                        std::atomic<int64_t>* clustersScanned) {
     int total = 0;
     if (m_bpb.totalDataClusters < 1) return 0;
     uint32_t maxCluster = m_bpb.totalDataClusters + 1; // cluster numbering starts at 2
@@ -501,24 +503,78 @@ int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<
         return (value & kFatMask) == 0;
     };
 
-    for (uint32_t cluster = 2; cluster <= maxCluster; ++cluster) {
+    uint64_t clusterSize64 = static_cast<uint64_t>(m_bpb.sectorsPerCluster) * m_bpb.bytesPerSector;
+    if (clusterSize64 == 0 || clusterSize64 > (64u * 1024 * 1024)) return 0;
+    size_t clusterSize = static_cast<size_t>(clusterSize64);
+
+    // Data clusters are laid out contiguously on disk by construction
+    // (cluster N+1 immediately follows cluster N), so the whole data
+    // region can be read as one long sequential stream in large chunks -
+    // far faster on real media than one small read per free cluster.
+    constexpr size_t kChunkBytes = 16 * 1024 * 1024;
+    uint32_t clustersPerChunk = static_cast<uint32_t>(std::max<size_t>(1, kChunkBytes / clusterSize));
+    std::vector<uint8_t> chunk;
+
+    for (uint32_t chunkStart = 2; chunkStart <= maxCluster; chunkStart += clustersPerChunk) {
         if (deadlineTick != 0 && GetTickCount64() >= deadlineTick) break;
         if (cancelFlag && cancelFlag->load()) break;
-        if (!isFree(cluster)) continue;
 
-        std::vector<uint8_t> data = ReadCluster(cluster);
-        if (data.size() < kEntrySize * 2) continue;
-        const uint8_t* dot = data.data();
-        const uint8_t* dotdot = data.data() + kEntrySize;
-        bool looksLikeDir =
-            dot[0] == '.' && (dot[11] & 0x10) && std::memcmp(dot + 1, "          ", 10) == 0 &&
-            dotdot[0] == '.' && dotdot[1] == '.' && (dotdot[11] & 0x10) &&
-            std::memcmp(dotdot + 2, "         ", 9) == 0;
-        if (!looksLikeDir) continue;
+        uint32_t chunkEnd = std::min(chunkStart + clustersPerChunk - 1, maxCluster);
+        uint32_t clustersInChunk = chunkEnd - chunkStart + 1;
 
-        int sub = WipeStaleEntriesRecursive(cluster, deadlineTick, cancelFlag, 64,
-                                             liveDirsVisited, liveEntriesWiped);
-        if (sub > 0) total += sub;
+        // Cheap, in-memory check first: if nothing in this whole span is
+        // even free, there is nothing here a live directory tree
+        // couldn't already reach - skip the data read outright. On a
+        // drive that's mostly full of live files this alone can skip
+        // most of the volume's I/O.
+        bool anyFree = false;
+        for (uint32_t c = chunkStart; c <= chunkEnd; ++c) {
+            if (isFree(c)) { anyFree = true; break; }
+        }
+        if (!anyFree) {
+            if (clustersScanned) clustersScanned->fetch_add(clustersInChunk);
+            continue;
+        }
+
+        size_t chunkLen = static_cast<size_t>(clustersInChunk) * clusterSize;
+        if (chunk.size() < chunkLen) chunk.resize(chunkLen);
+
+        LARGE_INTEGER li; li.QuadPart = static_cast<LONGLONG>(ClusterByteOffset(chunkStart));
+        bool readOk = SetFilePointerEx(m_handle, li, nullptr, FILE_BEGIN) != 0;
+        DWORD readBytes = 0;
+        if (readOk) {
+            readOk = ReadFile(m_handle, chunk.data(), static_cast<DWORD>(chunkLen), &readBytes, nullptr) != 0 &&
+                     readBytes == chunkLen;
+        }
+        if (!readOk) {
+            // A read failure on one span (a bad sector on well-used
+            // flash media, say) shouldn't abort the whole sweep - the
+            // same "one bad spot doesn't stop the rest" approach
+            // WipeStaleEntriesRecursive already takes for a directory
+            // read error. Count it as covered and move on.
+            if (clustersScanned) clustersScanned->fetch_add(clustersInChunk);
+            continue;
+        }
+
+        if (clusterSize >= kEntrySize * 2) {
+            for (uint32_t cluster = chunkStart; cluster <= chunkEnd; ++cluster) {
+                if (cancelFlag && cancelFlag->load()) break;
+                if (!isFree(cluster)) continue;
+                const uint8_t* data = chunk.data() + static_cast<size_t>(cluster - chunkStart) * clusterSize;
+                const uint8_t* dot = data;
+                const uint8_t* dotdot = data + kEntrySize;
+                bool looksLikeDir =
+                    dot[0] == '.' && (dot[11] & 0x10) && std::memcmp(dot + 1, "          ", 10) == 0 &&
+                    dotdot[0] == '.' && dotdot[1] == '.' && (dotdot[11] & 0x10) &&
+                    std::memcmp(dotdot + 2, "         ", 9) == 0;
+                if (!looksLikeDir) continue;
+
+                int sub = WipeStaleEntriesRecursive(cluster, deadlineTick, cancelFlag, 64,
+                                                     liveDirsVisited, liveEntriesWiped);
+                if (sub > 0) total += sub;
+            }
+        }
+        if (clustersScanned) clustersScanned->fetch_add(clustersInChunk);
     }
     return total;
 }

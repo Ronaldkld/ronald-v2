@@ -181,17 +181,24 @@ public:
     // has none left pointing to it. A forensic tool's own "orphan"
     // recovery finds folders like this by scanning raw clusters for a
     // directory's own signature instead of following pointers - this
-    // does the same thing: walks every still-FREE cluster on the volume
-    // (IsClusterFree, via a single bulk FAT read rather than one lookup
-    // per candidate) looking for one that still starts with a
-    // directory's own "." and ".." entries, and runs the normal
-    // recursive wipe from there when it finds one. Can be slow on a
-    // large, mostly-empty volume - there's no way around touching every
-    // free cluster at least once - so it honors the same
-    // deadline/cancel contract as WipeStaleEntriesRecursive.
+    // does the same thing: reads the whole FAT once (cheap - a few MB at
+    // most) to know which clusters are free, then reads the volume's
+    // data region in large sequential chunks (one read covering many
+    // clusters, instead of one small read per candidate) checking each
+    // free cluster in memory for a directory's own "." and ".." entries
+    // at its start, and runs the normal recursive wipe from there when
+    // it finds one. Still touches every byte of free space at least
+    // once - there's no way around that - but as sequential reads
+    // instead of effectively-random ones, which on a large, mostly-
+    // empty real drive is the difference between minutes and hours.
+    // `clustersScanned`, if given, is incremented after each chunk so a
+    // caller polling from another thread can show real progress instead
+    // of this looking stalled. Honors the same deadline/cancel contract
+    // as WipeStaleEntriesRecursive.
     int WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<bool>* cancelFlag,
                                  std::atomic<int>* liveDirsVisited,
-                                 std::atomic<int>* liveEntriesWiped);
+                                 std::atomic<int>* liveEntriesWiped,
+                                 std::atomic<int64_t>* clustersScanned = nullptr);
 
     const FatBpb& Bpb() const { return m_bpb; }
 
