@@ -169,10 +169,35 @@ std::vector<uint8_t> FatVolume::ReadCluster(uint32_t cluster) {
 }
 
 bool FatVolume::WriteBytesAt(uint64_t absoluteOffset, const uint8_t* data, size_t len) {
-    LARGE_INTEGER li; li.QuadPart = static_cast<LONGLONG>(absoluteOffset);
+    // A raw volume handle can reject a write at an arbitrary byte offset
+    // (ours is 31 bytes starting 1 byte into a 32-byte entry - never
+    // sector-aligned) even though the same handle reads unaligned ranges
+    // just fine; this only ever showed up against a real \\.\D: volume,
+    // never the plain FAT32 image file this project's own tests use.
+    // Read-modify-write the whole sector(s) spanning the target range
+    // instead, so both the read and the write are always sector-aligned.
+    uint32_t sectorSize = m_bpb.bytesPerSector ? m_bpb.bytesPerSector : 512;
+    uint64_t sectorStart = (absoluteOffset / sectorSize) * sectorSize;
+    uint64_t rangeEnd = absoluteOffset + len;
+    uint64_t sectorEnd = ((rangeEnd + sectorSize - 1) / sectorSize) * sectorSize;
+    size_t spanLen = static_cast<size_t>(sectorEnd - sectorStart);
+
+    std::vector<uint8_t> buf(spanLen);
+    LARGE_INTEGER li; li.QuadPart = static_cast<LONGLONG>(sectorStart);
+    if (!SetFilePointerEx(m_handle, li, nullptr, FILE_BEGIN)) return false;
+    DWORD readBytes = 0;
+    if (!ReadFile(m_handle, buf.data(), static_cast<DWORD>(buf.size()), &readBytes, nullptr) ||
+        readBytes != buf.size()) {
+        return false;
+    }
+
+    size_t patchOffset = static_cast<size_t>(absoluteOffset - sectorStart);
+    std::memcpy(buf.data() + patchOffset, data, len);
+
     if (!SetFilePointerEx(m_handle, li, nullptr, FILE_BEGIN)) return false;
     DWORD written = 0;
-    return WriteFile(m_handle, data, static_cast<DWORD>(len), &written, nullptr) && written == len;
+    return WriteFile(m_handle, buf.data(), static_cast<DWORD>(buf.size()), &written, nullptr) &&
+           written == buf.size();
 }
 
 uint32_t FatVolume::ResolveDirectoryCluster(const std::vector<std::wstring>& relativePathComponents) {
