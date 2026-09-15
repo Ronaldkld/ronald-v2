@@ -195,6 +195,7 @@ void MainWindow::OnCommand(int id) {
         case IDM_TOOLS_WIPE_EDITOR_TEMPS: CmdWipeEditorTemps(); break;
         case IDM_TOOLS_WIPE_FREE_SPACE: CmdWipeFreeSpace(); break;
         case IDM_TOOLS_DUMP_FOLDER_RAW: CmdDumpFolderRaw(); break;
+        case IDM_TOOLS_DEEP_SCAN_ALLOCATED: CmdDeepScanAllocated(); break;
         case IDM_HELP_ABOUT: CmdAbout(); break;
         default: break;
     }
@@ -652,6 +653,53 @@ void MainWindow::CmdWipeEditorTemps() {
 
     m_wipeThread = std::thread([this]() {
         int wiped = hexcore::Wiper::WipeEditorTemps(m_wipeVolumeRoot);
+        PostMessageW(m_hwnd, kMsgWipeTempsDone, 0, static_cast<LPARAM>(wiped));
+    });
+}
+
+void MainWindow::CmdDeepScanAllocated() {
+    if (m_wipeThread.joinable()) return; // already running
+
+    std::wstring dir;
+    if (!PickFolder(m_hwnd, L"Select the drive or folder for the deep, high-risk scan", dir))
+        return;
+
+    std::wstring msg =
+        L"WARNING - this goes beyond every other option in this program.\n\n"
+        L"The normal deleted-file cleanup only ever touches FREE space, which "
+        L"guarantees it can never overwrite a real, currently-live file. This "
+        L"deep scan additionally inspects clusters the drive currently has "
+        L"ALLOCATED to some other file or folder, looking for leftover "
+        L"directory-entry data that used to live there before that space was "
+        L"reused. It only ever acts on a match that is checked far more "
+        L"strictly than the normal scan - but unlike every other option here, "
+        L"a wrong match on this pass means overwriting bytes inside a file "
+        L"that is genuinely still in use right now, not something already "
+        L"deleted. That risk, however small, is real and cannot be fully "
+        L"ruled out.\n\n"
+        L"Only proceed if you understand and accept that risk. Make sure you "
+        L"have nothing on this drive you cannot afford to lose, ideally a "
+        L"separate backup/image of it. This cannot be undone.\n\n"
+        L"Continue with the deep scan?";
+    int r = MessageBoxW(m_hwnd, msg.c_str(), L"Deep Scan - High Risk", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    if (r != IDYES) return;
+
+    // A second, explicit confirmation - this is deliberately not a
+    // single click away from the normal, safe cleanup.
+    std::wstring confirm2 = L"Last confirmation: this WILL scan space currently in use by other "
+                             L"files on " + dir + L" and can, in rare cases, corrupt one of them. "
+                             L"Proceed?";
+    if (MessageBoxW(m_hwnd, confirm2.c_str(), L"Deep Scan - Final Confirmation",
+                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+        return;
+    }
+
+    m_wipeVolumeRoot = dir;
+    m_activeWipeKind = WipeKind::Temps;
+    CreateWipeProgressWindow(L"Deep scan (high risk) on " + dir + L"...\n0 folders processed");
+
+    m_wipeThread = std::thread([this]() {
+        int wiped = hexcore::Wiper::WipeEditorTemps(m_wipeVolumeRoot, 3, /*deepScanAllocated=*/true);
         PostMessageW(m_hwnd, kMsgWipeTempsDone, 0, static_cast<LPARAM>(wiped));
     });
 }

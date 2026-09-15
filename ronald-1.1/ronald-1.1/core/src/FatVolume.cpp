@@ -87,7 +87,7 @@ std::wstring ShortNameToString(const uint8_t* e) {
 // makes an ordinary file's content matching this by chance astronomically
 // unlikely - but it is still a heuristic, not a certainty, which is why
 // this is opt-in (see WipeOrphanedDirectories) rather than always on.
-bool ClusterLooksLikeDirectoryData(const uint8_t* data, size_t len) {
+bool ClusterLooksLikeDirectoryData(const uint8_t* data, size_t len, bool strict) {
     if (len < kEntrySize) return false;
     size_t totalSlots = len / kEntrySize;
     size_t plausible = 0;
@@ -110,6 +110,29 @@ bool ClusterLooksLikeDirectoryData(const uint8_t* data, size_t len) {
         }
         uint8_t ntRes = e[12];
         if (ntRes != 0x00 && ntRes != 0x08 && ntRes != 0x10 && ntRes != 0x18) continue;
+        if (strict) {
+            // In strict mode (used only for a cluster that's currently
+            // ALLOCATED - i.e. this cluster is, right now, part of some
+            // other live file's or directory's chain - a false positive
+            // here means writing into real, live data, not just wasting
+            // time on empty space. Extra corroboration: both the write-
+            // date and the write-time fields must decode to values FAT32
+            // itself considers valid (year 1980-2107, month 1-12, day
+            // 1-31, hour <24, minute/second <60) - a check ordinary file
+            // bytes satisfy only by chance, independent of the attribute
+            // and NT-byte checks already applied.
+            uint16_t wtime, wdate;
+            std::memcpy(&wtime, e + 22, 2);
+            std::memcpy(&wdate, e + 24, 2);
+            uint16_t month = (wdate >> 5) & 0x0F;
+            uint16_t day = wdate & 0x1F;
+            uint16_t hour = (wtime >> 11) & 0x1F;
+            uint16_t minute = (wtime >> 5) & 0x3F;
+            uint16_t second = wtime & 0x1F;
+            bool plausibleDate = month >= 1 && month <= 12 && day >= 1 && day <= 31 &&
+                                  hour <= 23 && minute <= 59 && second <= 29;
+            if (!plausibleDate) continue;
+        }
         ++plausible;
     }
     // An unused (all-0x00) slot alone passes every check above by
@@ -117,10 +140,12 @@ bool ClusterLooksLikeDirectoryData(const uint8_t* data, size_t len) {
     // empty space would otherwise score 100% "plausible" for having
     // nothing but unused slots. That's not a directory, it's just free
     // space (extremely common, especially right after a free-space
-    // wipe) - require real content (at least a couple of actual, non-
-    // unused entries) before this is worth recursing into at all.
-    if (populated < 2) return false;
-    return plausible * 100 >= totalSlots * 90;
+    // wipe) - require real content before this is worth recursing into
+    // at all, more of it when strict (allocated-cluster) mode raises the
+    // stakes of getting this wrong.
+    if (populated < (strict ? 8u : 2u)) return false;
+    size_t thresholdPct = strict ? 100 : 90;
+    return plausible * 100 >= totalSlots * thresholdPct;
 }
 } // namespace
 
@@ -526,10 +551,84 @@ int FatVolume::WipeStaleEntriesRecursive(uint32_t startCluster, uint64_t deadlin
     return total;
 }
 
+int FatVolume::WipeSingleClusterStrict(uint32_t cluster, uint64_t deadlineTick,
+                                        const std::atomic<bool>* cancelFlag,
+                                        std::atomic<int>* liveDirsVisited,
+                                        std::atomic<int>* liveEntriesWiped, int maxDepth) {
+    if (maxDepth <= 0) return 0;
+    if (deadlineTick != 0 && GetTickCount64() >= deadlineTick) return 0;
+    if (cancelFlag && cancelFlag->load()) return 0;
+    if (cluster < 2) return 0;
+
+    std::vector<uint8_t> data = ReadCluster(cluster);
+    if (data.empty()) return 0;
+
+    ++m_dirsVisited;
+    if (liveDirsVisited) liveDirsVisited->fetch_add(1);
+
+    uint64_t clusterBase = ClusterByteOffset(cluster);
+    static const uint8_t zeroTail[kEntrySize - 1] = {0};
+    int total = 0;
+    std::vector<uint32_t> subdirClusters;
+
+    for (size_t off = 0; off + kEntrySize <= data.size(); off += kEntrySize) {
+        const uint8_t* e = data.data() + off;
+        uint8_t firstByte = e[0];
+        if (firstByte == 0xE5) {
+            if (WriteBytesAt(clusterBase + off + 1, zeroTail, sizeof(zeroTail))) ++total;
+            continue;
+        }
+        if (firstByte == 0x00) continue;
+        uint8_t attr = e[11];
+        if (attr == 0x0F) continue;    // LFN fragment - nothing to recurse into directly
+        if (!(attr & 0x10)) continue;  // not a directory entry
+        uint16_t hi, lo;
+        std::memcpy(&hi, e + 20, 2);
+        std::memcpy(&lo, e + 26, 2);
+        uint32_t subCluster = (static_cast<uint32_t>(hi) << 16) | lo;
+        if (subCluster >= 2 && subCluster != cluster) subdirClusters.push_back(subCluster);
+    }
+    if (total > 0 && liveEntriesWiped) liveEntriesWiped->fetch_add(total);
+    m_subdirsFound += static_cast<int>(subdirClusters.size());
+
+    for (uint32_t sub : subdirClusters) {
+        int subTotal = 0;
+        if (IsClusterFree(sub)) {
+            // A free cluster's own chain is safe to follow fully - same
+            // guarantee every other pass in this class already relies on.
+            subTotal = WipeStaleEntriesRecursive(sub, deadlineTick, cancelFlag, 64,
+                                                  liveDirsVisited, liveEntriesWiped);
+        } else {
+            // Still allocated: re-validate independently before touching
+            // it at all, rather than trusting a pointer found inside
+            // already-uncertain data.
+            std::vector<uint8_t> subData = ReadCluster(sub);
+            if (subData.size() >= kEntrySize * 2) {
+                const uint8_t* dot = subData.data();
+                const uint8_t* dotdot = subData.data() + kEntrySize;
+                bool looksLikeDir =
+                    dot[0] == '.' && (dot[11] & 0x10) && std::memcmp(dot + 1, "          ", 10) == 0 &&
+                    dotdot[0] == '.' && dotdot[1] == '.' && (dotdot[11] & 0x10) &&
+                    std::memcmp(dotdot + 2, "         ", 9) == 0;
+                if (!looksLikeDir) {
+                    looksLikeDir = ClusterLooksLikeDirectoryData(subData.data(), subData.size(), true);
+                }
+                if (looksLikeDir) {
+                    subTotal = WipeSingleClusterStrict(sub, deadlineTick, cancelFlag, liveDirsVisited,
+                                                        liveEntriesWiped, maxDepth - 1);
+                }
+            }
+        }
+        if (subTotal > 0) total += subTotal;
+    }
+    return total;
+}
+
 int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<bool>* cancelFlag,
                                         std::atomic<int>* liveDirsVisited,
                                         std::atomic<int>* liveEntriesWiped,
-                                        std::atomic<int64_t>* clustersScanned) {
+                                        std::atomic<int64_t>* clustersScanned,
+                                        bool includeAllocatedClusters) {
     int total = 0;
     if (m_bpb.totalDataClusters < 1) return 0;
     uint32_t maxCluster = m_bpb.totalDataClusters + 1; // cluster numbering starts at 2
@@ -576,15 +675,18 @@ int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<
         uint32_t clustersInChunk = chunkEnd - chunkStart + 1;
 
         // Cheap, in-memory check first: if nothing in this whole span is
-        // even free, there is nothing here a live directory tree
-        // couldn't already reach - skip the data read outright. On a
-        // drive that's mostly full of live files this alone can skip
-        // most of the volume's I/O.
-        bool anyFree = false;
-        for (uint32_t c = chunkStart; c <= chunkEnd; ++c) {
-            if (isFree(c)) { anyFree = true; break; }
+        // even free - and allocated clusters aren't in scope either -
+        // there is nothing here a live directory tree couldn't already
+        // reach, so skip the data read outright. On a drive that's
+        // mostly full of live files this alone can skip most of the
+        // volume's I/O in the default (free-only) mode.
+        bool anyCandidate = includeAllocatedClusters;
+        if (!anyCandidate) {
+            for (uint32_t c = chunkStart; c <= chunkEnd; ++c) {
+                if (isFree(c)) { anyCandidate = true; break; }
+            }
         }
-        if (!anyFree) {
+        if (!anyCandidate) {
             if (clustersScanned) clustersScanned->fetch_add(clustersInChunk);
             continue;
         }
@@ -612,7 +714,8 @@ int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<
         if (clusterSize >= kEntrySize * 2) {
             for (uint32_t cluster = chunkStart; cluster <= chunkEnd; ++cluster) {
                 if (cancelFlag && cancelFlag->load()) break;
-                if (!isFree(cluster)) continue;
+                bool free = isFree(cluster);
+                if (!free && !includeAllocatedClusters) continue;
                 const uint8_t* data = chunk.data() + static_cast<size_t>(cluster - chunkStart) * clusterSize;
                 const uint8_t* dot = data;
                 const uint8_t* dotdot = data + kEntrySize;
@@ -624,9 +727,23 @@ int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<
                 // signature; one of its later clusters, reachable only if
                 // the chain linking it back is broken, never does - the
                 // broader structural check is the only way to still find
-                // one of those.
+                // one of those. An allocated candidate is held to the
+                // strict variant regardless of whether the "." signature
+                // already matched, and is repaired via
+                // WipeSingleClusterStrict - never the ordinary chain-
+                // following recursive wipe, which would follow this
+                // cluster's REAL chain (whatever file or directory
+                // currently owns it) rather than staying confined to the
+                // one cluster that was actually validated.
+                if (!free) {
+                    if (!looksLikeDir && !ClusterLooksLikeDirectoryData(data, clusterSize, true)) continue;
+                    int sub = WipeSingleClusterStrict(cluster, deadlineTick, cancelFlag, liveDirsVisited,
+                                                       liveEntriesWiped);
+                    if (sub > 0) total += sub;
+                    continue;
+                }
                 bool looksLikeContinuation =
-                    !looksLikeDir && ClusterLooksLikeDirectoryData(data, clusterSize);
+                    !looksLikeDir && ClusterLooksLikeDirectoryData(data, clusterSize, false);
                 if (!looksLikeDir && !looksLikeContinuation) continue;
 
                 int sub = WipeStaleEntriesRecursive(cluster, deadlineTick, cancelFlag, 64,

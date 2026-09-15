@@ -181,7 +181,7 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
     return count;
 }
 
-int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
+int Wiper::WipeEditorTemps(const std::wstring& dir, int passes, bool deepScanAllocated) {
     if (dir.empty()) return 0;
     s_cancelRequested = false;
     s_tempsFilesWiped = 0;
@@ -265,7 +265,8 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                         s_orphanTotalClusters = fatVol.Bpb().totalDataClusters;
                         s_orphanStartTick = GetTickCount64();
                         fatVol.WipeOrphanedDirectories(0, &s_cancelRequested, &s_dirsVisitedRaw,
-                                                        &s_dirEntriesWiped, &s_orphanClustersScanned);
+                                                        &s_dirEntriesWiped, &s_orphanClustersScanned,
+                                                        deepScanAllocated);
                     }
 
                     DeviceIoControl(fatVol.RawHandle(), FSCTL_UNLOCK_VOLUME, nullptr, 0,

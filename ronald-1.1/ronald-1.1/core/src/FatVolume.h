@@ -195,10 +195,49 @@ public:
     // caller polling from another thread can show real progress instead
     // of this looking stalled. Honors the same deadline/cancel contract
     // as WipeStaleEntriesRecursive.
+    // `includeAllocatedClusters` (default false - every existing caller
+    // keeps the original, safe behavior) extends the same scan to
+    // clusters the FAT currently marks IN USE by some other file or
+    // directory's chain, not just free ones. This is a materially
+    // different risk: a false match on a free cluster wastes a little
+    // time, but a false match here means writing into what is, right
+    // now, real live data - a regular file whose content coincidentally
+    // resembles directory entries closely enough (astronomically
+    // unlikely for genuinely random bytes, far less so for another
+    // structured file format, e.g. a nested disk image). Allocated
+    // clusters are checked with ClusterLooksLikeDirectoryData's strict
+    // mode (near-100% consistency, a higher minimum entry count, and a
+    // requirement that every candidate entry's own date fields decode to
+    // plausible values) to keep the odds of that as low as reasonably
+    // achievable, but it is a heuristic, not a certainty - only enable
+    // this after the caller has made that trade-off explicit to the
+    // user, never as a default.
+    // Used only for an ALLOCATED cluster matched by the strict heuristic
+    // (see WipeOrphanedDirectories's includeAllocatedClusters). Processes
+    // EXACTLY this one cluster's 32-byte slots as directory data and
+    // nothing more - deliberately never calls WalkClusterChain, unlike
+    // every other wipe path in this class. A free cluster's own FAT
+    // chain always stops at itself, which is what makes chain-following
+    // safe everywhere else; an allocated cluster's chain belongs to
+    // whatever file or directory genuinely owns it right now, so
+    // following it here - on nothing but one heuristic match - could
+    // wander through that entire file's real content treating it all as
+    // directory entries. A live subdirectory pointer found inside this
+    // cluster is only ever followed after its OWN cluster independently
+    // re-qualifies: the normal safe recursive wipe if it's free, or this
+    // same single-cluster treatment again if it's still allocated -
+    // every hop through allocated space is independently justified, none
+    // of it inherited from the one already-uncertain match that led here.
+    int WipeSingleClusterStrict(uint32_t cluster, uint64_t deadlineTick,
+                                 const std::atomic<bool>* cancelFlag,
+                                 std::atomic<int>* liveDirsVisited,
+                                 std::atomic<int>* liveEntriesWiped, int maxDepth = 8);
+
     int WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<bool>* cancelFlag,
                                  std::atomic<int>* liveDirsVisited,
                                  std::atomic<int>* liveEntriesWiped,
-                                 std::atomic<int64_t>* clustersScanned = nullptr);
+                                 std::atomic<int64_t>* clustersScanned = nullptr,
+                                 bool includeAllocatedClusters = false);
 
     // Diagnostic-only, read-only, never writes anything: walks EVERY
     // cluster in the directory's full chain with no early stop of any

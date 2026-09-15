@@ -54,7 +54,17 @@ public:
     // directory-entry slots (see class comment). Cancellable via
     // RequestCancel(); poll GetTempsFilesWiped()/GetTempsFoldersDone()
     // for progress. Returns the number of temp files wiped.
-    static int WipeEditorTemps(const std::wstring& dir, int passes = 3);
+    //
+    // `deepScanAllocated` extends the FAT32 pass's orphan-directory sweep
+    // to clusters the FAT currently marks IN USE by some other file or
+    // directory, not just free ones (see FatVolume::WipeOrphanedDirectories's
+    // own parameter of the same name for the full explanation). This is a
+    // materially different risk from every other mode this class has -
+    // false positives here mean writing into real, currently-live data,
+    // not just wasted time - and must only ever be set true from a UI
+    // path that has separately made that trade-off explicit to the user;
+    // never as a default or in response to anything but a direct request.
+    static int WipeEditorTemps(const std::wstring& dir, int passes = 3, bool deepScanAllocated = false);
 
     static int GetTempsFilesWiped();
     static int GetTempsFoldersDone();
