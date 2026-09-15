@@ -91,12 +91,15 @@ bool ClusterLooksLikeDirectoryData(const uint8_t* data, size_t len) {
     if (len < kEntrySize) return false;
     size_t totalSlots = len / kEntrySize;
     size_t plausible = 0;
+    size_t populated = 0; // slots holding an actual entry, not just an unused (0x00) one
     for (size_t i = 0; i < totalSlots; ++i) {
         const uint8_t* e = data + i * kEntrySize;
         uint8_t firstByte = e[0];
         uint8_t attr = e[11];
         if (attr > 0x3F) continue; // real FAT attribute bytes never set the top 2 bits
-        if (firstByte == 0x00 || firstByte == 0xE5) { ++plausible; continue; }
+        if (firstByte == 0x00) { ++plausible; continue; }
+        if (firstByte == 0xE5) { ++plausible; ++populated; continue; }
+        ++populated;
         if (attr == 0x0F) {
             if (e[12] != 0x00) continue; // LFN "type" byte is always 0
             uint16_t midCluster;
@@ -109,6 +112,14 @@ bool ClusterLooksLikeDirectoryData(const uint8_t* data, size_t len) {
         if (ntRes != 0x00 && ntRes != 0x08 && ntRes != 0x10 && ntRes != 0x18) continue;
         ++plausible;
     }
+    // An unused (all-0x00) slot alone passes every check above by
+    // definition, so a cluster that's entirely - or almost entirely -
+    // empty space would otherwise score 100% "plausible" for having
+    // nothing but unused slots. That's not a directory, it's just free
+    // space (extremely common, especially right after a free-space
+    // wipe) - require real content (at least a couple of actual, non-
+    // unused entries) before this is worth recursing into at all.
+    if (populated < 2) return false;
     return plausible * 100 >= totalSlots * 90;
 }
 } // namespace
