@@ -810,8 +810,27 @@ void MainWindow::OnWipeProgressTick() {
             int64_t orphanScanned = hexcore::Wiper::GetOrphanClustersScanned();
             double pct = orphanTotal > 0 ? (100.0 * orphanScanned / orphanTotal) : 0.0;
             if (pct > 100.0) pct = 100.0;
-            swprintf(buf + len, 400 - len, L"\nOrphan folder scan: %.0f%% of free space checked",
-                     pct);
+            int extra = swprintf(buf + len, 400 - len,
+                                  L"\nOrphan folder scan: %.0f%% of free space checked", pct);
+            // Reading real USB media at its actual speed is the floor
+            // here - there's no way around touching every byte of free
+            // space once - so a bare percentage doesn't say whether
+            // that means two more minutes or twenty. Estimate from the
+            // rate seen so far instead of leaving it a guess.
+            uint64_t startTick = hexcore::Wiper::GetOrphanStartTick();
+            if (extra > 0 && startTick != 0 && orphanScanned > 0) {
+                uint64_t elapsedMs = GetTickCount64() - startTick;
+                if (elapsedMs > 3000) { // let the rate settle before trusting it
+                    double clustersPerMs = static_cast<double>(orphanScanned) / elapsedMs;
+                    int64_t remaining = orphanTotal - orphanScanned;
+                    if (clustersPerMs > 0 && remaining > 0) {
+                        double etaMs = remaining / clustersPerMs;
+                        double etaMin = etaMs / 60000.0;
+                        swprintf(buf + len + extra, 400 - len - extra,
+                                 etaMin < 1.0 ? L" (< 1 min left)" : L" (~%.0f min left)", etaMin);
+                    }
+                }
+            }
         }
     } else {
         return;

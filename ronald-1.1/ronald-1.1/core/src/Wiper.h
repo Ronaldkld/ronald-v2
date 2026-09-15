@@ -77,6 +77,12 @@ public:
     // phase looking stalled. Both are 0 before/without that phase.
     static int64_t GetOrphanClustersScanned();
     static int64_t GetOrphanTotalClusters();
+    // GetTickCount64() value when the orphan sweep started, so a caller
+    // can compute elapsed time and, from that plus clusters-scanned vs.
+    // total, an ETA - reading a large volume's whole free space at real
+    // USB speed can legitimately take a while, and a percentage alone
+    // doesn't say whether that means two more minutes or twenty.
+    static uint64_t GetOrphanStartTick();
 
     // Diagnostic-only, read-only, never writes anything: resolves `dir`
     // to its FAT32 cluster (by name, from the volume root - this is the
@@ -157,6 +163,7 @@ private:
     static std::atomic<int>      s_subdirsFound;
     static std::atomic<int64_t>  s_orphanClustersScanned;
     static std::atomic<int64_t>  s_orphanTotalClusters;
+    static std::atomic<uint64_t> s_orphanStartTick;
     static std::atomic<uint64_t> s_deadlineTick; // GetTickCount64() value to stop by; 0 = no deadline
     static FatWipeStatus         s_fatWipeStatus;
 };

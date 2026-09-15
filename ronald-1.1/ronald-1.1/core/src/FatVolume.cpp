@@ -564,7 +564,7 @@ int FatVolume::WipeOrphanedDirectories(uint64_t deadlineTick, const std::atomic<
     // (cluster N+1 immediately follows cluster N), so the whole data
     // region can be read as one long sequential stream in large chunks -
     // far faster on real media than one small read per free cluster.
-    constexpr size_t kChunkBytes = 16 * 1024 * 1024;
+    constexpr size_t kChunkBytes = 64 * 1024 * 1024;
     uint32_t clustersPerChunk = static_cast<uint32_t>(std::max<size_t>(1, kChunkBytes / clusterSize));
     std::vector<uint8_t> chunk;
 

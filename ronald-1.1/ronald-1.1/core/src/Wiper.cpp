@@ -25,6 +25,7 @@ std::atomic<int>      Wiper::s_dirReadErrors{0};
 std::atomic<int>      Wiper::s_subdirsFound{0};
 std::atomic<int64_t>  Wiper::s_orphanClustersScanned{0};
 std::atomic<int64_t>  Wiper::s_orphanTotalClusters{0};
+std::atomic<uint64_t> Wiper::s_orphanStartTick{0};
 std::atomic<uint64_t> Wiper::s_deadlineTick{0};
 Wiper::FatWipeStatus  Wiper::s_fatWipeStatus{Wiper::FatWipeStatus::NotAttempted};
 
@@ -191,6 +192,7 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
     s_subdirsFound = 0;
     s_orphanClustersScanned = 0;
     s_orphanTotalClusters = 0;
+    s_orphanStartTick = 0;
     s_fatWipeStatus = FatWipeStatus::NotAttempted;
 
     constexpr uint64_t kGlobalBudgetMs = 45000; // hard cap so a folder-heavy drive still finishes fast
@@ -261,6 +263,7 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes) {
                     // same idea here.
                     if (!s_cancelRequested.load()) {
                         s_orphanTotalClusters = fatVol.Bpb().totalDataClusters;
+                        s_orphanStartTick = GetTickCount64();
                         fatVol.WipeOrphanedDirectories(0, &s_cancelRequested, &s_dirsVisitedRaw,
                                                         &s_dirEntriesWiped, &s_orphanClustersScanned);
                     }
@@ -291,6 +294,7 @@ int Wiper::GetDirReadErrors() { return s_dirReadErrors.load(); }
 int Wiper::GetSubdirsFound() { return s_subdirsFound.load(); }
 int64_t Wiper::GetOrphanClustersScanned() { return s_orphanClustersScanned.load(); }
 int64_t Wiper::GetOrphanTotalClusters() { return s_orphanTotalClusters.load(); }
+uint64_t Wiper::GetOrphanStartTick() { return s_orphanStartTick.load(); }
 
 std::wstring Wiper::DumpFolderRaw(const std::wstring& dir) {
     wchar_t volRoot[MAX_PATH] = {0};
