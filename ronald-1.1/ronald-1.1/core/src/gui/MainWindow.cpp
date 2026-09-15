@@ -193,6 +193,7 @@ void MainWindow::OnCommand(int id) {
         case IDM_FILE_NEXTTAB: CmdNextTab(); break;
         case IDM_FILE_PREVTAB: CmdPrevTab(); break;
         case IDM_TOOLS_WIPE_EDITOR_TEMPS: CmdWipeEditorTemps(); break;
+        case IDM_TOOLS_QUICK_WIPE: CmdQuickWipe(); break;
         case IDM_TOOLS_WIPE_FREE_SPACE: CmdWipeFreeSpace(); break;
         case IDM_TOOLS_DUMP_FOLDER_RAW: CmdDumpFolderRaw(); break;
         case IDM_TOOLS_DEEP_SCAN_ALLOCATED: CmdDeepScanAllocated(); break;
@@ -653,6 +654,38 @@ void MainWindow::CmdWipeEditorTemps() {
 
     m_wipeThread = std::thread([this]() {
         int wiped = hexcore::Wiper::WipeEditorTemps(m_wipeVolumeRoot);
+        PostMessageW(m_hwnd, kMsgWipeTempsDone, 0, static_cast<LPARAM>(wiped));
+    });
+}
+
+void MainWindow::CmdQuickWipe() {
+    if (m_wipeThread.joinable()) return; // already running
+
+    std::wstring dir;
+    if (!PickFolder(m_hwnd, L"Select the drive or folder to clean up deleted-file traces in (quick mode)",
+                     dir)) {
+        return;
+    }
+
+    std::wstring msg =
+        L"Quick mode: wipes orphaned temp files and zeroes stale directory entries the "
+        L"normal way, but skips the full-volume orphan-directory sweep - the slow part, "
+        L"since that has to read essentially the whole drive's free space once. This "
+        L"finishes about as fast as just walking the folder tree, but it will NOT find a "
+        L"directory that a broken FAT chain has cut loose from its parent (one a tool "
+        L"like FTK Imager can still show via its own deeper recovery) - use \"Limpiar "
+        L"rastros de archivos borrados\" for that.\n\n"
+        L"Continue?";
+    int r = MessageBoxW(m_hwnd, msg.c_str(), L"Quick Wipe", MB_YESNO | MB_ICONWARNING);
+    if (r != IDYES) return;
+
+    m_wipeVolumeRoot = dir;
+    m_activeWipeKind = WipeKind::Temps;
+    CreateWipeProgressWindow(L"Quick-cleaning " + dir + L"...\n0 folders processed");
+
+    m_wipeThread = std::thread([this]() {
+        int wiped = hexcore::Wiper::WipeEditorTemps(m_wipeVolumeRoot, 3, /*deepScanAllocated=*/false,
+                                                      /*skipOrphanSweep=*/true);
         PostMessageW(m_hwnd, kMsgWipeTempsDone, 0, static_cast<LPARAM>(wiped));
     });
 }

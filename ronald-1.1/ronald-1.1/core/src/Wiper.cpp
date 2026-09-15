@@ -181,7 +181,8 @@ int Wiper::WipeEditorTempsRecursive(const std::wstring& dir, int passes) {
     return count;
 }
 
-int Wiper::WipeEditorTemps(const std::wstring& dir, int passes, bool deepScanAllocated) {
+int Wiper::WipeEditorTemps(const std::wstring& dir, int passes, bool deepScanAllocated,
+                            bool skipOrphanSweep) {
     if (dir.empty()) return 0;
     s_cancelRequested = false;
     s_tempsFilesWiped = 0;
@@ -261,7 +262,7 @@ int Wiper::WipeEditorTemps(const std::wstring& dir, int passes, bool deepScanAll
                     // finds by scanning raw clusters for a directory's
                     // own signature instead of following pointers -
                     // same idea here.
-                    if (!s_cancelRequested.load()) {
+                    if (!s_cancelRequested.load() && !(skipOrphanSweep && !deepScanAllocated)) {
                         s_orphanTotalClusters = fatVol.Bpb().totalDataClusters;
                         s_orphanStartTick = GetTickCount64();
                         fatVol.WipeOrphanedDirectories(0, &s_cancelRequested, &s_dirsVisitedRaw,

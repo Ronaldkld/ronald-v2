@@ -97,6 +97,7 @@ private:
     void CmdNextTab();
     void CmdPrevTab();
     void CmdWipeEditorTemps();
+    void CmdQuickWipe();
     void CmdWipeFreeSpace();
     void CmdDumpFolderRaw();
     void CmdDeepScanAllocated();

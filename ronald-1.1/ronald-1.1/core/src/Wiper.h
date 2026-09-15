@@ -64,7 +64,19 @@ public:
     // not just wasted time - and must only ever be set true from a UI
     // path that has separately made that trade-off explicit to the user;
     // never as a default or in response to anything but a direct request.
-    static int WipeEditorTemps(const std::wstring& dir, int passes = 3, bool deepScanAllocated = false);
+    //
+    // `skipOrphanSweep`, when true, stops after the ordinary pointer-
+    // following pass (live directory tree, plus any whole-deleted
+    // subfolder still reachable from it) and never runs the full-volume
+    // orphan-directory sweep at all - the slow part, since it has to
+    // touch every free cluster on the drive at least once. Trades away
+    // finding a directory a broken FAT chain has cut loose (a folder FTK
+    // Imager's own deeper recovery can still show) for running in
+    // roughly the time it takes to walk the live tree once. Ignored
+    // (the full sweep still runs) when deepScanAllocated is also true,
+    // since that mode's entire point is the thorough pass.
+    static int WipeEditorTemps(const std::wstring& dir, int passes = 3, bool deepScanAllocated = false,
+                                bool skipOrphanSweep = false);
 
     static int GetTempsFilesWiped();
     static int GetTempsFoldersDone();

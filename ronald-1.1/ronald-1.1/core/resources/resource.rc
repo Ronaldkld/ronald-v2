@@ -31,6 +31,7 @@ BEGIN
     POPUP "&Herramientas"
     BEGIN
         MENUITEM "Limpiar rastros de archivos borrados...", IDM_TOOLS_WIPE_EDITOR_TEMPS
+        MENUITEM "Limpieza rapida (sin barrido completo)...", IDM_TOOLS_QUICK_WIPE
         MENUITEM SEPARATOR
         MENUITEM "Limpiar espacio libre (Wipe)...",  IDM_TOOLS_WIPE_FREE_SPACE
         MENUITEM SEPARATOR
